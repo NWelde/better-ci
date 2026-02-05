@@ -1,57 +1,14 @@
-# runner.py
-# TODO: Make failure outputs clearer (only remaining UX issue)
 from __future__ import annotations
 import os
 import shutil
 import subprocess
 from dataclasses import dataclass
+from typing import Dict, List, Optional, Set, Tuple
+
 from dag import run_dag_pipeline
 from model import Job  # using test_model, not model
-from git_facts.git import changed_files, merge_base, repo_root, head_sha, is_dirty
-
-# TODO: add git implementation so better-ci can follow the path:
-# local dev ---> commit ---> CI ---> push ---> cloud CI
 
 # --- Errors (structured, explainable) ---
-
-@dataclass
-class CIError(Exception):
-    """
-    Structured CI error with enough context for:
-      - clean CLI output
-      - future UI rendering
-      - debugging without full tracebacks
-    """
-    kind: str
-    job: str
-    step: str | None
-    message: str
-    details: dict
-
-    def __str__(self) -> str:
-        lines = [f"{self.kind}: {self.message}", f"job={self.job}"]
-        if self.step:
-            lines.append(f"step={self.step}")
-        for k, v in self.details.items():
-            lines.append(f"{k}={v}")
-        return "\n".join(lines)
-
-
-TOOL_HINTS = {
-    "npm": "Install Node.js (includes npm) or fix PATH.",
-    "node": "Install Node.js or fix PATH.",
-    "pytest": "Install pytest (e.g., pip install pytest).",
-    "ruff": "Install ruff (e.g., pip install ruff).",
-    "docker": "Install Docker and ensure the daemon is running.",
-    "python3": "Install Python 3 or fix PATH (python3).",
-}
-
-import os
-from pathlib import Path
-from typing import List, Optional, Tuple
-
-from git_facts.git import repo_root, head_sha, is_dirty, merge_base, changed_files as changed_files_between
-
 
 def git_functionality(
     compare_ref: str = "origin/main",
@@ -136,9 +93,97 @@ def git_functionality(
     finally:
         os.chdir(original_cwd)
 
+@dataclass
+class CIError(Exception):
+    kind: str
+    job: str
+    step: str | None
+    message: str
+    details: dict
+
+    def __str__(self) -> str:
+        lines = [f"{self.kind}: {self.message}", f"job={self.job}"]
+        if self.step:
+            lines.append(f"step={self.step}")
+        for k, v in self.details.items():
+            lines.append(f"{k}={v}")
+        return "\n".join(lines)
+
+
+TOOL_HINTS = {
+    "npm": "Install Node.js (includes npm) or fix PATH.",
+    "node": "Install Node.js or fix PATH.",
+    "pytest": "Install pytest (e.g., pip install pytest).",
+    "ruff": "Install ruff (e.g., pip install ruff).",
+    "docker": "Install Docker and ensure the daemon is running.",
+    "python3": "Install Python 3 or fix PATH (python3).",
+}
+
+# --- Planning (selection) ---
+
+@dataclass(frozen=True)
+class RunPlan:
+    """
+    Output of planning: what will run, what will be skipped, and why.
+    This is intentionally small and serializable for future cloud runs.
+    """
+    selected_jobs: List[Job]
+    skipped_jobs: List[Job]
+    reasons: Dict[str, str]  # job_name -> reason string
+
+
+def plan_run(
+    jobs: List[Job],
+    *,
+    only: Optional[List[str]] = None,
+) -> RunPlan:
+    """
+    Decide which jobs should run.
+
+    For now (no git yet):
+      - if `only` is None/empty => run all jobs
+      - if `only` provided => run only jobs whose names match
+        (and skip the rest)
+
+    Later you’ll add git-based selection here (changed files → jobs).
+    """
+    by_name: Dict[str, Job] = {j.name: j for j in jobs}
+    reasons: Dict[str, str] = {}
+
+    if not only:
+        for j in jobs:
+            reasons[j.name] = "selected: default (run all)"
+        return RunPlan(selected_jobs=list(jobs), skipped_jobs=[], reasons=reasons)
+
+    # Normalize names and keep ordering stable (preserve original job order)
+    only_set: Set[str] = set(only)
+
+    selected: List[Job] = []
+    skipped: List[Job] = []
+
+    for j in jobs:
+        if j.name in only_set:
+            selected.append(j)
+            reasons[j.name] = "selected: user requested via --only"
+        else:
+            skipped.append(j)
+            reasons[j.name] = "skipped: not in --only list"
+
+    # Optional: fail fast if user requested a job that doesn't exist
+    missing = [name for name in only_set if name not in by_name]
+    if missing:
+        raise CIError(
+            kind="UnknownJob",
+            job="<planner>",
+            step=None,
+            message=f"Unknown job(s) requested: {', '.join(missing)}",
+            details={"known_jobs": sorted(by_name.keys())},
+        )
+
+    return RunPlan(selected_jobs=selected, skipped_jobs=skipped, reasons=reasons)
+
 
 # --- Runner logic (executor) ---
-# This function is called by dag.py for each job in the DAG.
 
 def run_job(job: Job) -> None:
     """
@@ -147,7 +192,6 @@ def run_job(job: Job) -> None:
       2) execute job steps
       3) raise CIError with structured details on failure
     """
-    # 1) PRE-FLIGHT: required tools
     missing = []
     for tool in getattr(job, "requires", []) or []:
         if shutil.which(tool) is None:
@@ -166,7 +210,6 @@ def run_job(job: Job) -> None:
             },
         )
 
-    # PRE-FLIGHT: validate step working directories
     for s in getattr(job, "steps", []) or []:
         if getattr(s, "cwd", None) is not None and not os.path.isdir(s.cwd):
             raise CIError(
@@ -176,8 +219,6 @@ def run_job(job: Job) -> None:
                 message="Step cwd does not exist",
                 details={"cwd": s.cwd},
             )
-
-    # 2) EXECUTE STEPS
 
     env = os.environ.copy()
     env.update(getattr(job, "env", {}) or {})
@@ -194,7 +235,7 @@ def run_job(job: Job) -> None:
                 cwd=cwd,
                 env=env,
                 text=True,
-                capture_output=True,  # can be streamed later
+                capture_output=True,
             )
         except OSError as e:
             raise CIError(
@@ -222,15 +263,25 @@ def run_job(job: Job) -> None:
             )
 
 
-def run_pipeline(jobs: list[Job], max_workers: int | None = None) -> None:
+def run_pipeline(
+    jobs: List[Job],
+    max_workers: int | None = None,
+    *,
+    only: Optional[List[str]] = None,
+) -> None:
     """
     Public entry point for executing a CI pipeline.
 
-    Responsibilities:
-      - delegate scheduling + parallelism to dag.py
-      - provide run_job as the executor
-      - surface CIError cleanly to caller
+    Now includes planning:
+      - plan which jobs should run
+      - execute only those jobs in the DAG scheduler
     """
-    run_dag_pipeline(jobs, run_fn=run_job, max_workers=max_workers)
+    plan = plan_run(jobs, only=only)
 
+    # Optional: print plan summary (nice UX for hackathon demos)
+    # for j in plan.selected_jobs:
+    #     print(f"✓ {j.name} ({plan.reasons[j.name]})")
+    # for j in plan.skipped_jobs:
+    #     print(f"⏭ {j.name} ({plan.reasons[j.name]})")
 
+    run_dag_pipeline(plan.selected_jobs, run_fn=run_job, max_workers=max_workers)
