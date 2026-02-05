@@ -9,12 +9,17 @@ class JobBuilder:
         self.steps: list[Step] = []
         self.inputs: list[str] = []
         self.env: dict[str, str] = {}
+        self.requires: list[str] = []
 
     def depends_on(self, *job_names: str):
         self.dependency.extend(job_names)
         return self
+    
+    def define_requirments(self, *tools: str ):
+        self.requires.extend(tools)
+        return self
 
-    def step(self, name: str, run: str, cwd: str | None = None):
+    def define_step(self, name: str, run: str, cwd: str | None = None):
         self.steps.append(Step(name=name, run=run, cwd=cwd))
         return self
 

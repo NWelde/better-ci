@@ -17,3 +17,4 @@ class Job:
     dependency: list[str] = field(default_factory=list)
     inputs: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
+    requires: list[str] = field(default_factory=list)
