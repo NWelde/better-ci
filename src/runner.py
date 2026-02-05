@@ -1,19 +1,16 @@
 # runner.py
 # TODO: Make failure outputs clearer (only remaining UX issue)
 from __future__ import annotations
-
 import os
 import shutil
 import subprocess
 from dataclasses import dataclass
-
 from dag import run_dag_pipeline
-from test_model import Job  # using test_model, not model
-
+from model import Job  # using test_model, not model
+from git_facts.git import changed_files, merge_base, repo_root, head_sha, is_dirty
 
 # TODO: add git implementation so better-ci can follow the path:
 # local dev ---> commit ---> CI ---> push ---> cloud CI
-
 
 # --- Errors (structured, explainable) ---
 
@@ -48,6 +45,96 @@ TOOL_HINTS = {
     "docker": "Install Docker and ensure the daemon is running.",
     "python3": "Install Python 3 or fix PATH (python3).",
 }
+
+import os
+from pathlib import Path
+from typing import List, Optional, Tuple
+
+from git_facts.git import repo_root, head_sha, is_dirty, merge_base, changed_files as changed_files_between
+
+
+def git_functionality(
+    compare_ref: str = "origin/main",
+) -> Tuple[Optional[str], List[str]]:
+    """
+    Returns:
+      recent_commit_head:
+        - full SHA for HEAD if repo is clean
+        - None if repo has uncommitted changes (dirty)
+      changed_files:
+        - list of changed file paths relative to repo root
+    """
+    root: Path = repo_root()
+    original_cwd = os.getcwd()
+
+    try:
+        os.chdir(root)
+
+        dirty = is_dirty()
+        recent_commit_head: Optional[str] = None if dirty else head_sha()
+
+        if dirty:
+            # If dirty, include:
+            # - staged changes
+            # - unstaged changes
+            # - untracked files
+            files = set()
+
+            # Unstaged + staged (compared to HEAD)
+            # --name-only gives only paths, -z safer, but we'll keep it simple here.
+            import subprocess
+
+            unstaged = subprocess.check_output(
+                ["git", "diff", "--name-only"],
+                cwd=root,
+                text=True,
+            ).strip()
+
+            staged = subprocess.check_output(
+                ["git", "diff", "--name-only", "--cached"],
+                cwd=root,
+                text=True,
+            ).strip()
+
+            untracked = subprocess.check_output(
+                ["git", "ls-files", "--others", "--exclude-standard"],
+                cwd=root,
+                text=True,
+            ).strip()
+
+            if unstaged:
+                files.update(unstaged.splitlines())
+            if staged:
+                files.update(staged.splitlines())
+            if untracked:
+                files.update(untracked.splitlines())
+
+            changed = sorted(files)
+        else:
+            # If clean, compare HEAD against merge-base with compare_ref
+            # Fall back to HEAD~1 if origin/main isn't available.
+            try:
+                base = merge_base(compare_ref)
+            except Exception:
+                # e.g. no remote configured, first commit, etc.
+                base = "HEAD~1"
+
+            try:
+                changed = changed_files_between(base, "HEAD")
+            except Exception:
+                # If HEAD~1 doesn't exist (first commit), treat all tracked files as "changed"
+                import subprocess
+                tracked = subprocess.check_output(
+                    ["git", "ls-files"],
+                    cwd=root,
+                    text=True,
+                ).strip()
+                changed = tracked.splitlines() if tracked else []
+
+        return recent_commit_head, changed
+
+    finally:
+        os.chdir(original_cwd)
 
 
 # --- Runner logic (executor) ---
@@ -91,6 +178,7 @@ def run_job(job: Job) -> None:
             )
 
     # 2) EXECUTE STEPS
+
     env = os.environ.copy()
     env.update(getattr(job, "env", {}) or {})
 
@@ -144,3 +232,5 @@ def run_pipeline(jobs: list[Job], max_workers: int | None = None) -> None:
       - surface CIError cleanly to caller
     """
     run_dag_pipeline(jobs, run_fn=run_job, max_workers=max_workers)
+
+
