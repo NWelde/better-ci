@@ -1,120 +1,92 @@
+# dag.py
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Iterable
-import subprocess
-import os
-import sys
+from typing import Callable, Dict, Iterable, List, Set, Tuple
 
-# import your existing models
-from model import Job, Step
+from model import Job
 
 
-# -------------------------
-# Errors
-# -------------------------
-
-class CycleError(Exception):
-    pass
-
-
-class StepFailed(Exception):
-    pass
-
-
-# -------------------------
-# DAG construction
-# -------------------------
-
-def build_dag(jobs: Iterable[Job]):
+def build_dag(jobs: List[Job]) -> Tuple[Dict[str, Set[str]], Dict[str, int]]:
     """
-    Builds adjacency list + indegree map.
-    Edge direction: dep -> job
+    Build a DAG from Job objects.
+
+    Requires:
+      - job.name: str (unique)
+      - job.needs: iterable[str] (names of jobs that must run BEFORE this job)
     """
-    adj: dict[str, list[str]] = defaultdict(list)
-    indeg: dict[str, int] = {}
+    names = [j.name for j in jobs]
+    if len(set(names)) != len(names):
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        raise ValueError(f"Duplicate job names found: {dupes}")
 
-    job_map = {job.name: job for job in jobs}
+    name_set = set(names)
+    adj: Dict[str, Set[str]] = {n: set() for n in name_set}
+    indeg: Dict[str, int] = {n: 0 for n in name_set}
 
-    # initialize nodes
     for job in jobs:
-        indeg.setdefault(job.name, 0)
-        for dep in job.dependency:
-            indeg.setdefault(dep, 0)
-
-    # add edges
-    for job in jobs:
-        for dep in job.dependency:
-            if dep not in job_map:
-                raise KeyError(f"Job '{job.name}' depends on unknown job '{dep}'")
-            adj[dep].append(job.name)
-            indeg[job.name] += 1
+        deps = getattr(job, "needs", None) or []
+        for dep in deps:
+            if dep not in name_set:
+                raise ValueError(
+                    f"Job '{job.name}' depends on missing job '{dep}'. "
+                    f"Known jobs: {sorted(name_set)}"
+                )
+            # edge dep -> job.name
+            if job.name not in adj[dep]:
+                adj[dep].add(job.name)
+                indeg[job.name] += 1
 
     return adj, indeg
 
 
-def topo_levels(adj: dict[str, list[str]], indeg: dict[str, int]) -> list[list[str]]:
+def topo_levels(adj: Dict[str, Set[str]], indeg: Dict[str, int]) -> List[List[str]]:
     """
-    Kahn's algorithm, but grouped into parallel levels.
+    Convert DAG into topological "levels" (stages).
+    Each stage can run in parallel.
     """
-    indeg = dict(indeg)
-    levels: list[list[str]] = []
+    indeg = dict(indeg)  # copy (we mutate it)
+    q = deque(sorted([n for n, d in indeg.items() if d == 0]))
 
-    current = [n for n, d in indeg.items() if d == 0]
-    visited = 0
+    levels: List[List[str]] = []
+    processed = 0
 
-    while current:
-        levels.append(current)
-        next_level = []
+    while q:
+        level_size = len(q)
+        level: List[str] = []
 
-        for u in current:
-            visited += 1
-            for v in adj.get(u, []):
-                indeg[v] -= 1
-                if indeg[v] == 0:
-                    next_level.append(v)
+        for _ in range(level_size):
+            node = q.popleft()
+            level.append(node)
+            processed += 1
 
-        current = next_level
+            for child in sorted(adj.get(node, set())):
+                indeg[child] -= 1
+                if indeg[child] == 0:
+                    q.append(child)
 
-    if visited != len(indeg):
-        cycle_nodes = [n for n, d in indeg.items() if d > 0]
-        raise CycleError(f"Cycle detected involving: {cycle_nodes}")
+        levels.append(level)
+
+    if processed != len(indeg):
+        remaining = sorted([n for n, d in indeg.items() if d > 0])
+        raise ValueError(f"DAG has a cycle (or unresolved deps). Stuck nodes: {remaining}")
 
     return levels
 
 
-# -------------------------
-# Execution
-# -------------------------
-
-def run_step(step: Step, env: dict[str, str]):
-    print(f"    → {step.name}")
-
-    result = subprocess.run(
-        step.run,
-        shell=True,
-        cwd=step.cwd,
-        env={**os.environ, **env},
-    )
-
-    if result.returncode != 0:
-        raise StepFailed(f"Step failed: {step.name}")
-
-
-def run_job(job: Job):
-    print(f"\n Job: {job.name}")
-
-    for step in job.steps:
-        run_step(step, job.env)
-
-    print(f" Job completed: {job.name}")
-
-
-def run_dag_pipeline(jobs: Iterable[Job], max_workers: int | None = None):
+def run_dag_pipeline(
+    jobs: Iterable[Job],
+    run_fn: Callable[[Job], None],
+    max_workers: int | None = None,
+) -> None:
     """
-    Executes jobs respecting DAG dependencies.
-    Jobs in the same level run in parallel.
+    Scheduler + orchestrator (Option A):
+
+    - Computes a valid execution order from dependencies (DAG).
+    - Runs each stage in parallel.
+    - Calls run_fn(job) for actual execution.
+    - On first failure, stops and raises the exception.
     """
     jobs = list(jobs)
     job_map = {job.name: job for job in jobs}
@@ -123,51 +95,69 @@ def run_dag_pipeline(jobs: Iterable[Job], max_workers: int | None = None):
     levels = topo_levels(adj, indeg)
 
     for level_idx, level in enumerate(levels):
-        print(f"\n=== Stage {level_idx + 1}: {level} ===")
+        print(f"=== Stage {level_idx + 1}: {level} ===")
 
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {
-                pool.submit(run_job, job_map[name]): name
-                for name in level
-            }
+            futures = {pool.submit(run_fn, job_map[name]): name for name in level}
 
             for future in as_completed(futures):
                 job_name = futures[future]
                 try:
                     future.result()
+                    print(f"✓ {job_name}")
                 except Exception as e:
-                    print(f"\n✗ Job failed: {job_name}")
+                    print(f"✗ Job failed: {job_name}")
                     raise e
 
 
 # -------------------------
-# Optional: example usage
+# Self-test (optional)
 # -------------------------
-
 if __name__ == "__main__":
-    # minimal example assuming your Job / Step classes exist
+    """
+    Run a quick DAG sanity test:
 
-    jobs = [
-        Job(
-            name="lint",
-            steps=[Step("flake8", "echo linting")],
-        ),
-        Job(
-            name="build",
-            steps=[Step("build", "echo building")],
-        ),
-        Job(
-            name="test",
-            dependency=["lint", "build"],
-            steps=[Step("pytest", "echo testing")],
-        ),
-        Job(
-            name="deploy",
-            dependency=["test"],
-            steps=[Step("deploy", "echo deploying")],
-        ),
+        setup
+         /  \
+      lint  unit
+        \    /
+        package
+          |
+         e2e (fails)
+
+    Run:
+      python dag.py
+    """
+    import time
+    from dataclasses import dataclass
+
+    # If your real model.Job requires steps/env/etc, you can still test DAG logic
+    # by making a tiny compatible Job-like object here.
+    #
+    # BUT since we're importing Job from model above, this test assumes your Job
+    # has at least: name (str), needs (list[str]).
+    #
+    # If your real Job requires other fields, uncomment the local dataclass below
+    # and ALSO comment out `from model import Job` at the top for this self-test only.
+
+    # @dataclass(frozen=True)
+    # class Job:
+    #     name: str
+    #     needs: list[str]
+
+    def test_run_fn(job: Job) -> None:
+        print(f"Running {job.name}...")
+        time.sleep(0.7)
+        if job.name == "e2e":
+            raise RuntimeError("Intentional failure to test error handling")
+        print(f"{job.name} done.")
+
+    test_jobs = [
+        Job(name="setup", needs=[]),              # type: ignore[arg-type]
+        Job(name="lint", needs=["setup"]),        # type: ignore[arg-type]
+        Job(name="unit", needs=["setup"]),        # type: ignore[arg-type]
+        Job(name="package", needs=["lint", "unit"]),  # type: ignore[arg-type]
+        Job(name="e2e", needs=["package"]),       # type: ignore[arg-type]
     ]
 
-    run_dag_pipeline(jobs)
-
-#TODO: I have to make sure the dag.py has top notch error handling because this is going to be the map in which my ci is based, so this should be abel to catch parallel jobs trying to be executed together but dont have the same met dependecies this is something i have to consider
+    run_dag_pipeline(test_jobs, run_fn=test_run_fn, max_workers=4)

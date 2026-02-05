@@ -72,6 +72,8 @@ def head_sha() -> str:
     # `git rev-parse HEAD` resolves HEAD to its commit hash
     return _git(["rev-parse", "HEAD"])
 
+    #TODO: when in the future the user wants to run ci on a specific commit they can use the full sha to do so 
+
 
 def is_dirty() -> bool:
     """
