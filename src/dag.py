@@ -5,7 +5,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Dict, Iterable, List, Set, Tuple
 
-from model import Job
+from test_model import Job  # using test_model, not model
 
 
 def build_dag(jobs: List[Job]) -> Tuple[Dict[str, Set[str]], Dict[str, int]]:
@@ -33,7 +33,7 @@ def build_dag(jobs: List[Job]) -> Tuple[Dict[str, Set[str]], Dict[str, int]]:
                     f"Job '{job.name}' depends on missing job '{dep}'. "
                     f"Known jobs: {sorted(name_set)}"
                 )
-            # edge dep -> job.name
+            # Edge dep -> job.name (dep must run before job)
             if job.name not in adj[dep]:
                 adj[dep].add(job.name)
                 indeg[job.name] += 1
@@ -108,56 +108,3 @@ def run_dag_pipeline(
                 except Exception as e:
                     print(f"✗ Job failed: {job_name}")
                     raise e
-
-
-# -------------------------
-# Self-test (optional)
-# -------------------------
-if __name__ == "__main__":
-    """
-    Run a quick DAG sanity test:
-
-        setup
-         /  \
-      lint  unit
-        \    /
-        package
-          |
-         e2e (fails)
-
-    Run:
-      python dag.py
-    """
-    import time
-    from dataclasses import dataclass
-
-    # If your real model.Job requires steps/env/etc, you can still test DAG logic
-    # by making a tiny compatible Job-like object here.
-    #
-    # BUT since we're importing Job from model above, this test assumes your Job
-    # has at least: name (str), needs (list[str]).
-    #
-    # If your real Job requires other fields, uncomment the local dataclass below
-    # and ALSO comment out `from model import Job` at the top for this self-test only.
-
-    # @dataclass(frozen=True)
-    # class Job:
-    #     name: str
-    #     needs: list[str]
-
-    def test_run_fn(job: Job) -> None:
-        print(f"Running {job.name}...")
-        time.sleep(0.7)
-        if job.name == "e2e":
-            raise RuntimeError("Intentional failure to test error handling")
-        print(f"{job.name} done.")
-
-    test_jobs = [
-        Job(name="setup", needs=[]),              # type: ignore[arg-type]
-        Job(name="lint", needs=["setup"]),        # type: ignore[arg-type]
-        Job(name="unit", needs=["setup"]),        # type: ignore[arg-type]
-        Job(name="package", needs=["lint", "unit"]),  # type: ignore[arg-type]
-        Job(name="e2e", needs=["package"]),       # type: ignore[arg-type]
-    ]
-
-    run_dag_pipeline(test_jobs, run_fn=test_run_fn, max_workers=4)
