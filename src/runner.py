@@ -1,61 +1,65 @@
 from __future__ import annotations
+
 import os
 import shutil
 import subprocess
 from dataclasses import dataclass
+from fnmatch import fnmatch
 from typing import Dict, List, Optional, Set, Tuple
 
 from dag import run_dag_pipeline
-from model import Job  # using test_model, not model
+from model import Job  # your DSL Job
 
-# --- Errors (structured, explainable) ---
+# Git helpers (from your git_facts module)
+from git_facts.git import (
+    head_sha,
+    repo_root,
+    is_dirty,
+    merge_base,
+    changed_files as git_changed_files,  # alias to avoid name collision
+)
 
-def git_functionality(
-    compare_ref: str = "origin/main",
-) -> Tuple[Optional[str], List[str]]:
+# ----------------------------------------------------------------------
+# Git diff functionality
+# ----------------------------------------------------------------------
+
+def git_functionality(compare_ref: str = "origin/main") -> Tuple[Optional[str], List[str]]:
     """
     Returns:
       recent_commit_head:
         - full SHA for HEAD if repo is clean
         - None if repo has uncommitted changes (dirty)
-      changed_files:
+      changed:
         - list of changed file paths relative to repo root
     """
-    root: Path = repo_root()
+    root_path = repo_root()
     original_cwd = os.getcwd()
 
     try:
-        os.chdir(root)
+        os.chdir(root_path)
 
         dirty = is_dirty()
         recent_commit_head: Optional[str] = None if dirty else head_sha()
 
         if dirty:
-            # If dirty, include:
-            # - staged changes
-            # - unstaged changes
-            # - untracked files
-            files = set()
-
-            # Unstaged + staged (compared to HEAD)
-            # --name-only gives only paths, -z safer, but we'll keep it simple here.
-            import subprocess
+            # Dirty working tree: include staged, unstaged, and untracked changes.
+            files: Set[str] = set()
 
             unstaged = subprocess.check_output(
                 ["git", "diff", "--name-only"],
-                cwd=root,
+                cwd=root_path,
                 text=True,
             ).strip()
 
             staged = subprocess.check_output(
                 ["git", "diff", "--name-only", "--cached"],
-                cwd=root,
+                cwd=root_path,
                 text=True,
             ).strip()
 
             untracked = subprocess.check_output(
                 ["git", "ls-files", "--others", "--exclude-standard"],
-                cwd=root,
+                cwd=root_path,
                 text=True,
             ).strip()
 
@@ -67,23 +71,22 @@ def git_functionality(
                 files.update(untracked.splitlines())
 
             changed = sorted(files)
+
         else:
-            # If clean, compare HEAD against merge-base with compare_ref
-            # Fall back to HEAD~1 if origin/main isn't available.
+            # Clean repo: compare from merge-base(compare_ref) to HEAD
             try:
                 base = merge_base(compare_ref)
             except Exception:
-                # e.g. no remote configured, first commit, etc.
+                # e.g. no remote, unusual history, etc.
                 base = "HEAD~1"
 
             try:
-                changed = changed_files_between(base, "HEAD")
+                changed = git_changed_files(base, "HEAD")
             except Exception:
-                # If HEAD~1 doesn't exist (first commit), treat all tracked files as "changed"
-                import subprocess
+                # If HEAD~1 doesn't exist (first commit), treat all tracked files as changed
                 tracked = subprocess.check_output(
                     ["git", "ls-files"],
-                    cwd=root,
+                    cwd=root_path,
                     text=True,
                 ).strip()
                 changed = tracked.splitlines() if tracked else []
@@ -92,6 +95,11 @@ def git_functionality(
 
     finally:
         os.chdir(original_cwd)
+
+
+# ----------------------------------------------------------------------
+# Structured Errors
+# ----------------------------------------------------------------------
 
 @dataclass
 class CIError(Exception):
@@ -119,7 +127,10 @@ TOOL_HINTS = {
     "python3": "Install Python 3 or fix PATH (python3).",
 }
 
-# --- Planning (selection) ---
+
+# ----------------------------------------------------------------------
+# Planning (selection)
+# ----------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class RunPlan:
@@ -132,58 +143,106 @@ class RunPlan:
     reasons: Dict[str, str]  # job_name -> reason string
 
 
+def _matches_any(path: str, patterns: List[str]) -> bool:
+    """
+    Simple glob matching via fnmatch.
+    Patterns like "backend/*" work well.
+    Note: "**" behavior may vary by platform—good enough for hackathon scope.
+    """
+    return any(fnmatch(path, p) for p in patterns)
+
+
 def plan_run(
     jobs: List[Job],
     *,
     only: Optional[List[str]] = None,
+    use_git_diff: bool = False,
+    changed_files: Optional[List[str]] = None,
 ) -> RunPlan:
     """
     Decide which jobs should run.
 
-    For now (no git yet):
-      - if `only` is None/empty => run all jobs
-      - if `only` provided => run only jobs whose names match
-        (and skip the rest)
-
-    Later you’ll add git-based selection here (changed files → jobs).
+    Priority:
+      1) --only (explicit user request) wins
+      2) if git diff disabled -> run all
+      3) if git diff enabled:
+           - if changed_files unavailable -> run all (safe fallback)
+           - else filter by job.paths (glob patterns), unless job.diff_enabled is False
     """
     by_name: Dict[str, Job] = {j.name: j for j in jobs}
     reasons: Dict[str, str] = {}
 
-    if not only:
+    # 1) Explicit user selection
+    if only:
+        only_set: Set[str] = set(only)
+        selected: List[Job] = []
+        skipped: List[Job] = []
+
         for j in jobs:
-            reasons[j.name] = "selected: default (run all)"
+            if j.name in only_set:
+                selected.append(j)
+                reasons[j.name] = "selected: user requested via --only"
+            else:
+                skipped.append(j)
+                reasons[j.name] = "skipped: not in --only list"
+
+        missing = [name for name in only_set if name not in by_name]
+        if missing:
+            raise CIError(
+                kind="UnknownJob",
+                job="<planner>",
+                step=None,
+                message=f"Unknown job(s) requested: {', '.join(missing)}",
+                details={"known_jobs": sorted(by_name.keys())},
+            )
+
+        return RunPlan(selected_jobs=selected, skipped_jobs=skipped, reasons=reasons)
+
+    # 2) Default behavior: run all when git diff disabled
+    if not use_git_diff:
+        for j in jobs:
+            reasons[j.name] = "selected: default (git diff disabled)"
         return RunPlan(selected_jobs=list(jobs), skipped_jobs=[], reasons=reasons)
 
-    # Normalize names and keep ordering stable (preserve original job order)
-    only_set: Set[str] = set(only)
+    # 3) Git diff enabled but unavailable -> run all (safe fallback)
+    if changed_files is None:
+        for j in jobs:
+            reasons[j.name] = "selected: git diff enabled but changed_files unavailable (safe fallback)"
+        return RunPlan(selected_jobs=list(jobs), skipped_jobs=[], reasons=reasons)
 
+    changed_set = set(changed_files)
     selected: List[Job] = []
     skipped: List[Job] = []
 
     for j in jobs:
-        if j.name in only_set:
+        # Per-job opt-out: always run even when diff is enabled
+        if getattr(j, "diff_enabled", True) is False:
             selected.append(j)
-            reasons[j.name] = "selected: user requested via --only"
+            reasons[j.name] = "selected: diff disabled for this job"
+            continue
+
+        patterns = getattr(j, "paths", None)
+
+        # Safe default: if no patterns declared, run it
+        if not patterns:
+            selected.append(j)
+            reasons[j.name] = "selected: no paths specified (default run)"
+            continue
+
+        hit = any(_matches_any(f, patterns) for f in changed_set)
+        if hit:
+            selected.append(j)
+            reasons[j.name] = f"selected: changes matched paths {patterns}"
         else:
             skipped.append(j)
-            reasons[j.name] = "skipped: not in --only list"
-
-    # Optional: fail fast if user requested a job that doesn't exist
-    missing = [name for name in only_set if name not in by_name]
-    if missing:
-        raise CIError(
-            kind="UnknownJob",
-            job="<planner>",
-            step=None,
-            message=f"Unknown job(s) requested: {', '.join(missing)}",
-            details={"known_jobs": sorted(by_name.keys())},
-        )
+            reasons[j.name] = f"skipped: no changes matched paths {patterns}"
 
     return RunPlan(selected_jobs=selected, skipped_jobs=skipped, reasons=reasons)
 
 
-# --- Runner logic (executor) ---
+# ----------------------------------------------------------------------
+# Runner logic (executor)
+# ----------------------------------------------------------------------
 
 def run_job(job: Job) -> None:
     """
@@ -226,7 +285,7 @@ def run_job(job: Job) -> None:
     for s in job.steps:
         step_name = getattr(s, "name", None) or "<unnamed-step>"
         cmd = s.run
-        cwd = s.cwd
+        cwd = getattr(s, "cwd", None)
 
         try:
             completed = subprocess.run(
@@ -263,22 +322,42 @@ def run_job(job: Job) -> None:
             )
 
 
+# ----------------------------------------------------------------------
+# Public API
+# ----------------------------------------------------------------------
+
 def run_pipeline(
     jobs: List[Job],
     max_workers: int | None = None,
     *,
     only: Optional[List[str]] = None,
+    use_git_diff: bool = False,          # users can disable/enable in DSL
+    compare_ref: str = "origin/main",     # branch to diff against
 ) -> None:
     """
-    Public entry point for executing a CI pipeline.
+    Execute a CI pipeline with optional git-diff based job selection.
 
-    Now includes planning:
-      - plan which jobs should run
-      - execute only those jobs in the DAG scheduler
+    - If `only` is provided: run exactly those jobs, ignoring git diff
+    - If `use_git_diff` is False: run all jobs
+    - If `use_git_diff` is True:
+        - compute changed files (merge-base..HEAD if clean, staged/unstaged/untracked if dirty)
+        - select jobs using job.paths (glob patterns)
+        - jobs can opt-out via job.diff_enabled = False
     """
-    plan = plan_run(jobs, only=only)
+    changed: Optional[List[str]] = None
 
-    # Optional: print plan summary (nice UX for hackathon demos)
+    # Only compute changed files if we plan to use them
+    if use_git_diff and not only:
+        _head, changed = git_functionality(compare_ref=compare_ref)
+
+    plan = plan_run(
+        jobs,
+        only=only,
+        use_git_diff=use_git_diff,
+        changed_files=changed,
+    )
+
+    # Optional: print plan (nice for demos)
     # for j in plan.selected_jobs:
     #     print(f"✓ {j.name} ({plan.reasons[j.name]})")
     # for j in plan.skipped_jobs:
