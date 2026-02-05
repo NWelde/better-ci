@@ -3,7 +3,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 
-
+#TODO: I will have to add git implementation so better-ci is abel to follow the path LD ---> commit ---> CI ---> push ----> cloud CI
 # --- Errors (structured, explainable) ---
 
 @dataclass
