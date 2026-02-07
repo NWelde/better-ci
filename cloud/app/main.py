@@ -44,6 +44,13 @@ class CompleteRequest(BaseModel):
     status: str  # ok|failed
     details: dict[str, Any] = Field(default_factory=dict)
 
+class JobResponse(BaseModel):
+    id: str
+    job_name: str
+    status: str
+    logs: str | None
+    created_at: datetime
+
 # -------------------- Startup --------------------
 
 @app.on_event("startup")
@@ -150,6 +157,10 @@ async def complete(job_id: str, req: CompleteRequest):
             if lease.agent_id != req.agent_id:
                 raise HTTPException(status_code=403, detail="Lease owned by different agent")
 
+            # Store logs from details if present
+            logs = req.details.get("logs", "")
+            job.logs = logs if logs else None
+            
             job.status = req.status
             await s.delete(lease)
 
@@ -168,3 +179,19 @@ async def complete(job_id: str, req: CompleteRequest):
 
     await r.delete(lease_lock_key(job_id))
     return {"ok": True}
+
+@app.get("/jobs/{job_id}", response_model=JobResponse)
+async def get_job(job_id: str):
+    """Get job details including logs."""
+    async with SessionLocal() as s:
+        job = await s.get(Job, uuid.UUID(job_id))
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        
+        return JobResponse(
+            id=str(job.id),
+            job_name=job.job_name,
+            status=job.status,
+            logs=job.logs,
+            created_at=job.created_at,
+        )

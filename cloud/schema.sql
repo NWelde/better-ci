@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   job_name     TEXT NOT NULL,
   status       TEXT NOT NULL CHECK (status IN ('queued','leased','running','ok','failed','canceled')),
   payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  logs         TEXT,
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

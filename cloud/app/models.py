@@ -22,6 +22,7 @@ class Job(Base):
     job_name: Mapped[str] = mapped_column(sa.Text, nullable=False)
     status: Mapped[str] = mapped_column(sa.Text, nullable=False)
     payload_json: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=sa.text("'{}'::jsonb"))
+    logs: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(sa.TIMESTAMP(timezone=True), server_default=sa.text("now()"), nullable=False)
 
 class Lease(Base):

@@ -93,6 +93,11 @@ class Agent:
             )
             
             print(f"[{lease.job_id}] Completed with status: {result.status}")
+            if result.logs:
+                print(f"[{lease.job_id}] Logs:")
+                print("=" * 60)
+                print(result.logs)
+                print("=" * 60)
             
         except Exception as e:
             # Send failure status
