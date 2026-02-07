@@ -10,6 +10,7 @@ Runs a DAG of jobs—steps (shell, Docker, lint), dependencies (`needs`), option
 - **Deterministic cache** — Keys from declared inputs, env, tool versions. Tar.gz per job; prune keeps last N.
 - **Git-aware selection** — Diff against a ref (e.g. `origin/main`); run only jobs that touch changed files.
 - **Structured errors** — Job name, step name, exit code.
+- **Cloud option** — Submit workflows to an API; agents poll for jobs, execute them, and report logs.
 
 ## Requirements
 
@@ -66,6 +67,19 @@ Builder: `build("name").depends_on("other").define_step("step", "cmd").with_inpu
 - `--compare-ref` — Ref to diff against when using `--git-diff` (default: `origin/main`).
 - `--print-plan` / `--no-print-plan` — Print which jobs are selected or skipped (default: true).
 
+**`betterci submit`**
+
+- `--api` — API base URL (required; e.g. `http://localhost:8000`).
+- `--workflow` — Workflow name or path (default: `betterci_workflow`).
+- `--repo` — Repository URL (default: git remote origin URL).
+- `--ref` — Git ref/branch/commit (default: current branch or HEAD).
+
+**`betterci agent`**
+
+- `--api` — API base URL (required).
+- `--agent-id` — Unique agent identifier (default: hostname).
+- `--poll-interval` — Polling interval in seconds when idle (default: 5).
+
 ## How the runner works
 
 1. **Load** — The workflow file is executed; `workflow()` or `JOBS` must evaluate to a list of `Job`.
@@ -79,13 +93,15 @@ Cache key inputs are: job name, step names/commands/cwd, job env, versions of to
 
 | Path | Role |
 |------|------|
-| `src/betterci/cli.py` | CLI entrypoint; `betterci run` and options. |
+| `src/betterci/cli.py` | CLI entrypoint; `betterci run`, `betterci submit`, `betterci agent` and options. |
 | `src/betterci/runner.py` | Workflow loading, job selection (git diff), DAG build, parallel execution, cache restore/save, step execution (shell + step_workflows). |
 | `src/betterci/cache.py` | Cache key computation, tar.gz store/restore, prune. |
 | `src/betterci/dsl.py` | `job`, `sh`, `wf`, `build`, `matrix`; JobBuilder. |
 | `src/betterci/model.py` | `Job`, `Step` dataclasses. |
 | `src/betterci/dag.py` | DAG construction and topological levels. |
-| `src/betterci/git_facts/git.py` | Repo root, HEAD SHA, dirty state, changed files, merge-base. |
+| `src/betterci/git_facts/git.py` | Repo root, HEAD SHA, dirty state, changed files, merge-base, remote URL, current ref. |
+| `src/betterci/agent/` | Agent loop: poll API, claim jobs, run steps, report logs. |
 | `src/betterci/step_workflows/` | Docker and lint step execution; test-step expansion helpers. |
+| `cloud/` | Cloud API: queue runs, assign jobs to agents, store logs. |
 
 ## Project by Nathan Weldegiorgis, Raymond Wang, Devon Krish, and Kamran Samudrala
