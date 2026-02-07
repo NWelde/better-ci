@@ -1,8 +1,8 @@
 # runner.py
 from __future__ import annotations
 
-import importlib
 import os
+import runpy
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -158,19 +158,13 @@ def load_workflow(path: str | Path) -> List[Job]:
         raise ValueError(f"Workflow must be a .py file, got: {wf_path.name}")
 
     module_name = f"betterci_workflow_{wf_path.stem}"
-    spec = importlib.util.spec_from_file_location(module_name, str(wf_path))
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Could not create module spec for: {wf_path}")
-
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module  # allow relative imports inside workflow file (best-effort)
-    spec.loader.exec_module(module)
+    globals_dict = runpy.run_path(str(wf_path), run_name=module_name)
 
     jobs = None
-    if hasattr(module, "workflow") and callable(getattr(module, "workflow")):
-        jobs = module.workflow()
-    elif hasattr(module, "JOBS"):
-        jobs = getattr(module, "JOBS")
+    if "workflow" in globals_dict and callable(globals_dict["workflow"]):
+        jobs = globals_dict["workflow"]()
+    elif "JOBS" in globals_dict:
+        jobs = globals_dict["JOBS"]
 
     if not isinstance(jobs, list) or not all(isinstance(j, Job) for j in jobs):
         raise TypeError(
