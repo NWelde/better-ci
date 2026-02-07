@@ -202,7 +202,31 @@ class StepFailure(Exception):
 # ----------------------------------------------------------------------
 # Execution primitives
 # ----------------------------------------------------------------------
+
+def _get_workflow_runner(workflow_type: str):
+    """Dynamically import and return the run_step function from a workflow module."""
+    try:
+        module = __import__(f"betterci.step_workflows.{workflow_type}", fromlist=["run_step"])
+        return getattr(module, "run_step", None)
+    except ImportError:
+        return None
+
+
 def _run_step(job: Job, step: Step, repo_root: Path) -> None:
+    # Check if this step has a workflow_type attribute
+    workflow_type = getattr(step, "workflow_type", None)
+    if workflow_type:
+        runner = _get_workflow_runner(workflow_type)
+        if runner:
+            runner(job, step, repo_root)
+            return
+        else:
+            raise ValueError(
+                f"[{job.name}] step '{step.name}' has workflow_type '{workflow_type}' "
+                f"but no run_step function found in step_workflows.{workflow_type}"
+            )
+
+    # Regular step execution (default)
     cwd = (repo_root / (step.cwd or ".")).resolve()
     if not cwd.exists():
         raise FileNotFoundError(f"[{job.name}] step '{step.name}' cwd not found: {cwd}")
@@ -225,8 +249,6 @@ def _run_step(job: Job, step: Step, repo_root: Path) -> None:
             step=step.name,
             cmd=step.run,
             exit_code=proc.returncode,
-            stdout=proc.stdout[-4000:],  # Timeouts so the tests dont run forever
-            stderr=proc.stderr[-4000:],
         )
 
 
