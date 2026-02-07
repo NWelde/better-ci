@@ -162,7 +162,16 @@ def load_workflow(path: str | Path) -> List[Job]:
 
     jobs = None
     if "workflow" in globals_dict and callable(globals_dict["workflow"]):
-        jobs = globals_dict["workflow"]()
+        try:
+            jobs = globals_dict["workflow"]()
+        except TypeError as e:
+            if "positional arguments but" in str(e) and "was given" in str(e):
+                raise TypeError(
+                    "Your workflow() is being called with arguments (name collision with the helper). "
+                    "Use the 'wf' helper instead: `from betterci import wf, job, sh` then "
+                    "`def workflow(): return wf(job(...), job(...))`"
+                ) from e
+            raise
     elif "JOBS" in globals_dict:
         jobs = globals_dict["JOBS"]
 
