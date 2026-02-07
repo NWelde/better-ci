@@ -17,8 +17,8 @@ def cli():
 @cli.command()
 @click.option(
     "--workflow",
-    default="betterci_workflow.py",
-    help="Path to workflow file",
+    default="betterci_workflow",
+    help="Workflow name or path (e.g. betterci_workflow or betterci_workflow.py)",
 )
 @click.option(
     "--workers",
@@ -40,13 +40,14 @@ def run(workflow, workers, cache_dir, fail_fast):
     """Run a BetterCI workflow."""
 
     workflow_path = Path(workflow)
-
+    if not workflow_path.exists() and workflow_path.suffix != ".py":
+        workflow_path = Path(str(workflow_path) + ".py")
     if not workflow_path.exists():
         click.echo(f"Workflow file not found: {workflow}")
         sys.exit(1)
 
     try:
-        jobs = load_workflow(workflow_path.stem)
+        jobs = load_workflow(workflow_path)
         results = run_dag(
             jobs,
             repo_root=".",
