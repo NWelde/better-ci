@@ -9,11 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Set, Tuple, Optional
 import sys
-from model import Job, Step
-from cache import CacheStore, CacheHit
+from .model import Job, Step
+from .cache import CacheStore, CacheHit
 
 
-from git_facts.git import repo_root, head_sha, is_dirty, merge_base, changed_files as changed_files_between
+from .git_facts.git import repo_root, head_sha, is_dirty, merge_base, changed_files as changed_files_between
 
 # TODO: add git implementation so better-ci can follow the path:
 # local dev ---> commit ---> CI ---> push ---> cloud CI

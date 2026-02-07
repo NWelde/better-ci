@@ -1,1 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "betterci"
+version = "0.1.0"
+description = "BetterCI: cache-aware local CI runner"
+readme = "README.md"
+requires-python = ">=3.10"
 dependencies = ["click>=8.0"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+betterci = "betterci.cli:cli"

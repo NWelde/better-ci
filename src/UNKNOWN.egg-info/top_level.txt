@@ -1,2 +1,0 @@
-betterci
-git_facts
