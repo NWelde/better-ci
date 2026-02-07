@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from model import Job
+from .model import Job
 
 # ---------------------------------------------------------------------
 # Core idea

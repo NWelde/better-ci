@@ -1,5 +1,5 @@
 # dsl.py
-from model import Step, Job
+from .model import Step, Job
 
 
 class JobBuilder:

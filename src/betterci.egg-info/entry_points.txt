@@ -1,0 +1,2 @@
+[console_scripts]
+betterci = betterci.cli:cli
