@@ -15,7 +15,6 @@ from fnmatch import fnmatch
 
 from .git_facts.git import repo_root, head_sha, is_dirty, merge_base, changed_files as changed_files_between
 
-# TODO: add git implementation so better-ci can follow the path:
 # local dev ---> commit ---> CI ---> push ---> cloud CI
 
 
@@ -203,7 +202,6 @@ class StepFailure(Exception):
 # ----------------------------------------------------------------------
 # Execution primitives
 # ----------------------------------------------------------------------
-
 def _run_step(job: Job, step: Step, repo_root: Path) -> None:
     cwd = (repo_root / (step.cwd or ".")).resolve()
     if not cwd.exists():
@@ -212,15 +210,24 @@ def _run_step(job: Job, step: Step, repo_root: Path) -> None:
     env = os.environ.copy()
     env.update(getattr(job, "env", {}) or {})
 
-    # stream output to terminal (good DX for hackathon)
     proc = subprocess.run(
         step.run,
         shell=True,
         cwd=str(cwd),
         env=env,
+        text=True,
+        capture_output=True,   # so you can show output on failure
     )
+
     if proc.returncode != 0:
-        raise StepFailure(job=job.name, step=step.name, cmd=step.run, exit_code=proc.returncode)
+        raise StepFailure(
+            job=job.name,
+            step=step.name,
+            cmd=step.run,
+            exit_code=proc.returncode,
+            stdout=proc.stdout[-4000:],  # Timeouts so the tests dont run forever
+            stderr=proc.stderr[-4000:],
+        )
 
 
 def _run_job(job: Job, repo_root: Path, cache: CacheStore) -> Tuple[str, str]:
