@@ -240,8 +240,14 @@ def _run_step(job: Job, step: Step, repo_root: Path) -> None:
         cwd=str(cwd),
         env=env,
         text=True,
-        capture_output=True,   # so you can show output on failure
+        capture_output=True,   # capture for error messages
     )
+
+    # Print output so it can be streamed (e.g., by agent log capture)
+    if proc.stdout:
+        print(proc.stdout, end="")
+    if proc.stderr:
+        print(proc.stderr, end="", file=sys.stderr)
 
     if proc.returncode != 0:
         raise StepFailure(

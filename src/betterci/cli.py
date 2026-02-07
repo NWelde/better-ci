@@ -61,5 +61,23 @@ def run(workflow, workers, cache_dir, fail_fast, git_diff, compare_ref, print_pl
         sys.exit(1)
 
 
+@cli.command()
+@click.option("--api", required=True, help="API base URL (e.g., https://api.example.com)")
+@click.option("--token", required=True, help="Authentication token")
+@click.option("--poll-interval", default=5, type=int, help="Polling interval in seconds when no jobs available")
+def agent(api, token, poll_interval):
+    """Run BetterCI agent loop to poll for and execute jobs."""
+    from betterci.agent.agent import run_agent
+    
+    try:
+        run_agent(api, token, poll_interval)
+    except KeyboardInterrupt:
+        click.echo("\nAgent stopped by user")
+        sys.exit(0)
+    except Exception as e:
+        click.echo(f"Error: {e}")
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     cli()

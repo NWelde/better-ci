@@ -118,5 +118,13 @@ def run_step(job: Job, step: Step, repo_root: Path) -> None:
         text=True,
         capture_output=True,
     )
+    
+    # Print output so it can be streamed (e.g., by agent log capture)
+    if proc.stdout:
+        print(proc.stdout, end="")
+    if proc.stderr:
+        import sys
+        print(proc.stderr, end="", file=sys.stderr)
+    
     if proc.returncode != 0:
         raise StepFailure(job=job.name, step=step.name, cmd=step.run, exit_code=proc.returncode)
