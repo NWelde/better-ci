@@ -11,6 +11,10 @@ from typing import Dict, List, Set, Tuple
 from model import Job, Step
 from cache import CacheStore, CacheHit
 
+import importlib
+
+mod = importlib.import_module("betterci_workflow")
+jobs = mod.workflow()  # List[Job]
 
 @dataclass
 class StepFailure(Exception):
