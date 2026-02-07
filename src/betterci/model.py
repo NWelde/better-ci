@@ -9,8 +9,11 @@ from typing import Optional, List, Dict
 class Step:
     """A single command (step) inside a CI job."""
     name: str
-    run: str
+    run: str = ""
     cwd: str | None = None
+    # Typed steps (e.g. kind="test") are expanded by step_workflows before execution.
+    kind: Optional[str] = None
+    data: Optional[Dict] = None
 
 
 @dataclass
