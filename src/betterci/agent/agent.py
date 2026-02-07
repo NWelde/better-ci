@@ -14,16 +14,16 @@ from .models import Lease
 class Agent:
     """BetterCI agent that polls for jobs and executes them."""
     
-    def __init__(self, api_url: str, token: str, poll_interval: int = 5):
+    def __init__(self, api_url: str, agent_id: str, poll_interval: int = 5):
         """
         Initialize agent.
         
         Args:
             api_url: Base URL of the API
-            token: Authentication token
+            agent_id: Unique identifier for this agent instance
             poll_interval: Seconds to wait between polls when no jobs available
         """
-        self.api_client = APIClient(api_url, token)
+        self.api_client = APIClient(api_url, agent_id)
         self.poll_interval = poll_interval
         self.work_dir = Path(".betterci/agent_work")
         self.cache_root = Path(".betterci/cache")
@@ -48,10 +48,10 @@ class Agent:
         
         while self.running:
             try:
-                lease = self.api_client.get_lease()
+                lease = self.api_client.claim_lease()
                 
                 if lease:
-                    print(f"[{lease.lease_id}] Acquired lease for job: {lease.job.get('name', 'unknown')}")
+                    print(f"[{lease.job_id}] Acquired lease for job: {lease.job_name}")
                     self._execute_lease(lease)
                 else:
                     # No jobs available, wait before next poll
@@ -83,7 +83,7 @@ class Agent:
             
             # Send completion status
             self.api_client.complete_lease(
-                lease.lease_id,
+                lease.job_id,
                 result.status,
                 {
                     "logs": result.logs,
@@ -92,13 +92,13 @@ class Agent:
                 },
             )
             
-            print(f"[{lease.lease_id}] Completed with status: {result.status}")
+            print(f"[{lease.job_id}] Completed with status: {result.status}")
             
         except Exception as e:
             # Send failure status
             try:
                 self.api_client.complete_lease(
-                    lease.lease_id,
+                    lease.job_id,
                     "failed",
                     {
                         "error": str(e),
@@ -106,19 +106,19 @@ class Agent:
                     },
                 )
             except Exception as api_err:
-                print(f"[{lease.lease_id}] Failed to send completion: {api_err}")
+                print(f"[{lease.job_id}] Failed to send completion: {api_err}")
             
-            print(f"[{lease.lease_id}] Execution failed: {e}")
+            print(f"[{lease.job_id}] Execution failed: {e}")
 
 
-def run_agent(api_url: str, token: str, poll_interval: int = 5) -> None:
+def run_agent(api_url: str, agent_id: str, poll_interval: int = 5) -> None:
     """
     Run the BetterCI agent loop.
     
     Args:
         api_url: Base URL of the API
-        token: Authentication token
+        agent_id: Unique identifier for this agent instance
         poll_interval: Seconds to wait between polls when no jobs available
     """
-    agent = Agent(api_url, token, poll_interval)
+    agent = Agent(api_url, agent_id, poll_interval)
     agent.run()

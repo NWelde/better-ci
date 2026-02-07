@@ -17,9 +17,9 @@ from .models import ExecutionResult, Lease
 class LogCapture:
     """Context manager that captures stdout/stderr and streams to API."""
     
-    def __init__(self, api_client: APIClient, lease_id: str):
+    def __init__(self, api_client: APIClient, job_id: str):
         self.api_client = api_client
-        self.lease_id = lease_id
+        self.job_id = job_id
         self.log_buffer = io.StringIO()
         self.original_stdout = sys.stdout
         self.original_stderr = sys.stderr
@@ -42,7 +42,7 @@ class LogCapture:
         self.log_buffer.write(text)
         # Stream logs incrementally (send every chunk)
         try:
-            self.api_client.send_logs(self.lease_id, text)
+            self.api_client.send_logs(self.job_id, text)
         except Exception:
             # Don't fail execution if log streaming fails
             pass
@@ -53,7 +53,7 @@ class LogCapture:
         remaining = self.log_buffer.getvalue()
         if remaining:
             try:
-                self.api_client.send_logs(self.lease_id, remaining)
+                self.api_client.send_logs(self.job_id, remaining)
             except Exception:
                 pass
             self.log_buffer.seek(0)
@@ -137,6 +137,60 @@ def _clone_or_update_repo(repo_url: str, ref: str, work_dir: Path) -> Path:
     return repo_path
 
 
+def job_to_dict(job: Job) -> dict:
+    """
+    Convert a Job model to a dictionary for API submission.
+    This is the reverse of _dict_to_job().
+    
+    Args:
+        job: Job model instance
+        
+    Returns:
+        Dictionary with job definition
+    """
+    # Convert steps to list of dicts
+    steps = []
+    for step in job.steps:
+        step_dict = {
+            "name": step.name,
+            "run": step.run,
+        }
+        if step.cwd is not None:
+            step_dict["cwd"] = step.cwd
+        if step.kind is not None:
+            step_dict["kind"] = step.kind
+        if step.data is not None:
+            step_dict["data"] = step.data
+        steps.append(step_dict)
+    
+    # Build job dict with required fields
+    job_dict = {
+        "name": job.name,
+        "steps": steps,
+        "needs": job.needs,
+        "inputs": job.inputs,
+        "env": job.env,
+        "requires": job.requires,
+        "diff_enabled": job.diff_enabled,
+    }
+    
+    # Add optional fields if present
+    if job.paths is not None:
+        job_dict["paths"] = job.paths
+    
+    # Add cache fields if present (using getattr for optional fields)
+    if hasattr(job, "cache_dirs"):
+        job_dict["cache_dirs"] = getattr(job, "cache_dirs")
+    if hasattr(job, "cache_enabled"):
+        job_dict["cache_enabled"] = getattr(job, "cache_enabled")
+    if hasattr(job, "cache_skip_on_hit"):
+        job_dict["cache_skip_on_hit"] = getattr(job, "cache_skip_on_hit")
+    if hasattr(job, "cache_keep"):
+        job_dict["cache_keep"] = getattr(job, "cache_keep")
+    
+    return job_dict
+
+
 def _dict_to_job(job_dict: dict) -> Job:
     """
     Convert a job dictionary from API to a Job model.
@@ -216,7 +270,7 @@ def execute_lease(
         cache = CacheStore(cache_root)
         
         # Execute job with log capture
-        log_capture = LogCapture(api_client, lease.lease_id)
+        log_capture = LogCapture(api_client, lease.job_id)
         with log_capture:
             try:
                 job_name, status = _run_job(job, repo_path, cache)

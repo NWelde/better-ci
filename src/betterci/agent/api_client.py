@@ -18,17 +18,17 @@ class APIError(Exception):
 class APIClient:
     """HTTP client for communicating with the BetterCI API."""
     
-    def __init__(self, base_url: str, token: str):
+    def __init__(self, base_url: str, agent_id: str):
         """
         Initialize API client.
         
         Args:
             base_url: Base URL of the API (e.g., "https://api.example.com")
-            token: Authentication token
+            agent_id: Unique identifier for this agent instance
         """
         # Ensure base_url doesn't end with /
         self.base_url = base_url.rstrip("/")
-        self.token = token
+        self.agent_id = agent_id
     
     def _request(
         self,
@@ -55,7 +55,6 @@ class APIClient:
         url = urljoin(self.base_url + "/", path.lstrip("/"))
         
         req_headers = {
-            "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
         }
         if headers:
@@ -75,34 +74,38 @@ class APIClient:
                 return {}
         except urllib.error.HTTPError as e:
             error_body = e.read().decode("utf-8") if e.fp else ""
+            # 204 No Content is used for "no jobs available"
+            if e.code == 204:
+                raise APIError("204")  # Special marker for no jobs
             raise APIError(f"API request failed: {e.code} {e.reason}. {error_body}")
         except urllib.error.URLError as e:
             raise APIError(f"Network error: {e.reason}")
         except json.JSONDecodeError as e:
             raise APIError(f"Invalid JSON response: {e}")
     
-    def get_lease(self) -> Optional[Lease]:
+    def claim_lease(self) -> Optional[Lease]:
         """
-        Poll for an available job lease.
+        Claim an available job lease from the queue.
         
         Returns:
             Lease object if a job is available, None otherwise
         """
         try:
-            response = self._request("GET", "/leases")
-            # Handle empty response or null
-            if not response or response is None:
-                return None
+            response = self._request(
+                "POST",
+                "/leases/claim",
+                data={"agent_id": self.agent_id},
+            )
             # Validate required fields
             if not isinstance(response, dict):
                 return None
-            if "lease_id" not in response or "job" not in response or "repo_url" not in response:
+            if "job_id" not in response or "job_name" not in response or "payload_json" not in response:
                 return None
             return Lease.from_dict(response)
         except APIError as e:
-            # If 404, no lease available (this is normal)
+            # 204 means no jobs available (this is normal)
             error_str = str(e)
-            if "404" in error_str:
+            if "204" in error_str:
                 return None
             # Re-raise other errors
             raise
@@ -110,34 +113,40 @@ class APIClient:
             # Invalid response format
             return None
     
-    def send_logs(self, lease_id: str, logs: str) -> None:
+    def send_logs(self, job_id: str, logs: str) -> None:
         """
         Send log chunks to the API.
         
+        Note: This endpoint may not be implemented yet in the cloud API.
+        
         Args:
-            lease_id: ID of the lease
+            job_id: ID of the job
             logs: Log content to send
         """
-        self._request(
-            "POST",
-            f"/leases/{lease_id}/logs",
-            data={"logs": logs},
-        )
+        # TODO: Implement when /leases/{job_id}/logs endpoint is available
+        # For now, logs are included in the complete_lease call
+        pass
     
-    def complete_lease(self, lease_id: str, status: str, results: dict) -> None:
+    def complete_lease(self, job_id: str, status: str, details: dict) -> None:
         """
         Mark a lease as complete and send final results.
         
         Args:
-            lease_id: ID of the lease
-            status: "success" or "failed"
-            results: Dictionary with execution results
+            job_id: ID of the job
+            status: "ok" or "failed" (must match API expectations)
+            details: Dictionary with execution details (logs, results, etc.)
         """
+        # Convert "success" to "ok" if needed
+        api_status = "ok" if status == "success" else status
+        if api_status not in ("ok", "failed"):
+            api_status = "failed"
+        
         self._request(
             "POST",
-            f"/leases/{lease_id}/complete",
+            f"/leases/{job_id}/complete",
             data={
-                "status": status,
-                **results,
+                "agent_id": self.agent_id,
+                "status": api_status,
+                "details": details,
             },
         )

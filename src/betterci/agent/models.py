@@ -7,26 +7,39 @@ from typing import Optional, Dict, Any
 
 @dataclass
 class Lease:
-    """Represents a job lease from the API."""
-    lease_id: str
-    job: Dict[str, Any]  # Job definition from API (will be converted to Job model)
-    repo_url: str
-    ref: str
-    # Additional fields that might come from API
-    run_id: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
+    """Represents a job lease from the API (ClaimedJob response)."""
+    job_id: str
+    run_id: str
+    job_name: str
+    payload_json: Dict[str, Any]  # Contains job definition and repo info
+    lease_expires_at: str  # ISO format timestamp
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> Lease:
-        """Create Lease from API response dictionary."""
+        """Create Lease from API ClaimedJob response dictionary."""
         return cls(
-            lease_id=data["lease_id"],
-            job=data["job"],
-            repo_url=data["repo_url"],
-            ref=data.get("ref", "HEAD"),
-            run_id=data.get("run_id"),
-            metadata=data.get("metadata"),
+            job_id=data["job_id"],
+            run_id=data["run_id"],
+            job_name=data["job_name"],
+            payload_json=data["payload_json"],
+            lease_expires_at=data["lease_expires_at"],
         )
+    
+    @property
+    def repo_url(self) -> str:
+        """Extract repo URL from payload_json."""
+        return self.payload_json.get("repo_url", "")
+    
+    @property
+    def ref(self) -> str:
+        """Extract git ref from payload_json."""
+        return self.payload_json.get("ref", "HEAD")
+    
+    @property
+    def job(self) -> Dict[str, Any]:
+        """Extract job definition from payload_json."""
+        # The job definition should be in payload_json
+        return self.payload_json.get("job", self.payload_json)
 
 
 @dataclass

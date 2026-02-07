@@ -144,6 +144,44 @@ def merge_base(with_ref: str = "origin/main") -> str:
     # `git merge-base` finds the best common ancestor between two refs
     return _git(["merge-base", "HEAD", with_ref])
 
+
+def get_remote_url(remote: str = "origin") -> str:
+    """
+    Get the URL of a git remote.
+
+    Args:
+        remote: The name of the remote (defaults to "origin").
+
+    Returns:
+        The remote URL as a string.
+
+    Raises:
+        subprocess.CalledProcessError: If the remote doesn't exist or git command fails.
+    """
+    return _git(["remote", "get-url", remote])
+
+
+def get_current_ref() -> str:
+    """
+    Get the current git reference (branch name or commit SHA).
+
+    Tries to get the branch name first. If HEAD is detached (no branch),
+    falls back to the commit SHA.
+
+    Returns:
+        Branch name (e.g., "main", "feature/xyz") or commit SHA if detached.
+    """
+    try:
+        # Try to get branch name first
+        branch = _git(["rev-parse", "--abbrev-ref", "HEAD"])
+        # If HEAD is detached, this returns "HEAD", so fall back to SHA
+        if branch == "HEAD":
+            return _git(["rev-parse", "HEAD"])
+        return branch
+    except subprocess.CalledProcessError:
+        # Fallback to commit SHA if anything fails
+        return _git(["rev-parse", "HEAD"])
+
 """
 Step-by-step algorithm (plain English)
 
