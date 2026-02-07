@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any, Callable, Iterable, List, Optional, Dict, Sequence, Union
+from typing import Any, Callable, Iterable, List, Optional, Dict, Sequence, Union, Literal
 
 from .model import Step, Job
 
@@ -14,6 +14,28 @@ from .model import Step, Job
 def sh(name: str, cmd: str, *, cwd: str | None = None) -> Step:
     """Create a shell step."""
     return Step(name=name, run=cmd, cwd=cwd)
+# dsl.py
+def test(
+    name: str,
+    *,
+    framework: Literal["pytest", "npm"] ,
+    args: str = "",
+    install: bool = True,
+    cwd: str | None = None,
+) -> Step:
+    """
+    Typed test step. Runner expands this deterministically into commands.
+    """
+    return Step(
+        name=name,
+        kind="test",
+        cwd=cwd,
+        data={
+            "framework": framework,
+            "args": args,
+            "install": install,
+        },
+    )
 
 
 # ---------------------------------------------------------------------
