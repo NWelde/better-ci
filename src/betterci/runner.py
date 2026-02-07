@@ -11,7 +11,7 @@ from typing import Dict, List, Set, Tuple, Optional
 import sys
 from .model import Job, Step
 from .cache import CacheStore, CacheHit
-
+from fnmatch import fnmatch
 
 from .git_facts.git import repo_root, head_sha, is_dirty, merge_base, changed_files as changed_files_between
 
@@ -295,6 +295,56 @@ def _build_graph(jobs: List[Job]) -> Tuple[Dict[str, Job], Dict[str, Set[str]], 
 # Public API
 # ----------------------------------------------------------------------
 
+def _matches_any(path: str, patterns: list[str]) -> bool:
+    return any(fnmatch(path, p) for p in patterns)
+
+
+def select_jobs(
+    jobs: List[Job],
+    *,
+    use_git_diff: bool,
+    compare_ref: str,
+    print_plan: bool,
+) -> List[Job]:
+    if not use_git_diff:
+        if print_plan:
+            for j in jobs:
+                print(f"✓ {j.name} (git diff disabled)")
+        return list(jobs)
+
+    _head, changed = git_functionality(compare_ref=compare_ref)
+    changed_set = set(changed or [])
+
+    selected: List[Job] = []
+    for j in jobs:
+        # per-job opt-out: always run
+        if getattr(j, "diff_enabled", True) is False:
+            selected.append(j)
+            if print_plan:
+                print(f"✓ {j.name} (diff disabled for job)")
+            continue
+
+        patterns = getattr(j, "paths", None)
+
+        # no paths -> always run
+        if not patterns:
+            selected.append(j)
+            if print_plan:
+                print(f"✓ {j.name} (no paths specified)")
+            continue
+
+        hit = any(_matches_any(f, patterns) for f in changed_set)
+        if hit:
+            selected.append(j)
+            if print_plan:
+                print(f"✓ {j.name} (matched {patterns})")
+        else:
+            if print_plan:
+                print(f"⏭ {j.name} (no match for {patterns})")
+
+    return selected
+
+
 def run_dag(
     jobs: List[Job],
     *,
@@ -302,16 +352,21 @@ def run_dag(
     cache_root: str | Path = ".betterci/cache",
     max_workers: int | None = None,
     fail_fast: bool = True,
+    use_git_diff: bool = False,
+    compare_ref: str = "origin/main",
+    print_plan: bool = True,
 ) -> Dict[str, str]:
-    """
-    Executes jobs respecting dependencies, with caching integration.
-    Returns {job_name: status}.
-    """
     repo_root_p = Path(repo_root).resolve()
     cache = CacheStore(cache_root)
 
-    by_name, adj, indeg = _build_graph(jobs)
+    jobs = select_jobs(
+        jobs,
+        use_git_diff=use_git_diff,
+        compare_ref=compare_ref,
+        print_plan=print_plan,
+    )
 
+    by_name, adj, indeg = _build_graph(jobs)
     ready: List[str] = [name for name, deg in indeg.items() if deg == 0]
     results: Dict[str, str] = {}
     failed = False

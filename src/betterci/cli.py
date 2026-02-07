@@ -20,23 +20,13 @@ def cli():
     default="betterci_workflow",
     help="Workflow name or path (e.g. betterci_workflow or betterci_workflow.py)",
 )
-@click.option(
-    "--workers",
-    default=None,
-    type=int,
-    help="Number of parallel workers",
-)
-@click.option(
-    "--cache-dir",
-    default=".betterci/cache",
-    help="Cache directory",
-)
-@click.option(
-    "--fail-fast/--no-fail-fast",
-    default=True,
-    help="Stop scheduling new jobs after first failure",
-)
-def run(workflow, workers, cache_dir, fail_fast):
+@click.option("--workers", default=None, type=int, help="Number of parallel workers")
+@click.option("--cache-dir", default=".betterci/cache", help="Cache directory")
+@click.option("--fail-fast/--no-fail-fast", default=True, help="Stop scheduling new jobs after first failure")
+@click.option("--git-diff/--no-git-diff", default=False, help="Select jobs based on git diff and job.paths")
+@click.option("--compare-ref", default="origin/main", show_default=True, help="Git ref to diff against")
+@click.option("--print-plan/--no-print-plan", default=True, show_default=True, help="Print selected/skipped jobs")
+def run(workflow, workers, cache_dir, fail_fast, git_diff, compare_ref, print_plan):
     """Run a BetterCI workflow."""
 
     workflow_path = Path(workflow)
@@ -54,6 +44,9 @@ def run(workflow, workers, cache_dir, fail_fast):
             cache_root=cache_dir,
             max_workers=workers,
             fail_fast=fail_fast,
+            use_git_diff=git_diff,
+            compare_ref=compare_ref,
+            print_plan=print_plan,
         )
 
         click.echo("\nResults:")
