@@ -1,5 +1,5 @@
-from .dsl import job, sh, matrix
-from .runner import run_pipeline
+from .dsl import job, sh, matrix, workflow, JobBuilder, build
+from .runner import run_dag
 from .model import Job, Step
 
-__all__ = ["job", "sh", "matrix", "run_pipeline", "Job", "Step"]
+__all__ = ["job", "sh", "matrix", "workflow", "JobBuilder", "build", "run_dag", "Job", "Step"]
