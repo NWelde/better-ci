@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: betterci
+      POSTGRES_PASSWORD: betterci
+      POSTGRES_DB: betterci
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  api:
+    build:
+      context: ./cloud
+    environment:
+      DATABASE_URL: postgresql+asyncpg://betterci:betterci@postgres:5432/betterci
+      REDIS_URL: redis://redis:6379/0
+      QUEUE_NAME: betterci:queue
+      LEASE_SECONDS: "600"
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+
+volumes:
+  pgdata:
