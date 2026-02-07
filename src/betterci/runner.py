@@ -8,11 +8,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Set, Tuple, Optional
-
+import sys
 from model import Job, Step
 from cache import CacheStore, CacheHit
 
-from src.git_facts.git import changed_files, merge_base, repo_root, head_sha, is_dirty
+
+from git_facts.git import repo_root, head_sha, is_dirty, merge_base, changed_files as changed_files_between
 
 # TODO: add git implementation so better-ci can follow the path:
 # local dev ---> commit ---> CI ---> push ---> cloud CI
@@ -50,11 +51,7 @@ TOOL_HINTS = {
     "python3": "Install Python 3 or fix PATH (python3).",
 }
 
-import os
-from pathlib import Path
-from typing import List, Optional, Tuple
 
-from git_facts.git import repo_root, head_sha, is_dirty, merge_base, changed_files as changed_files_between
 
 
 def git_functionality(
