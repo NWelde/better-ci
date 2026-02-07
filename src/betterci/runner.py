@@ -143,24 +143,46 @@ def git_functionality(
 # Workflow loading (local file/module)
 # ----------------------------------------------------------------------
 
-def load_workflow(module_name: str = "betterci_workflow") -> List[Job]:
+def load_workflow(path: str | Path) -> List[Job]:
     """
-    Convention:
-      - module exports workflow() -> List[Job]
-        OR exports JOBS = [...]
+    Load a workflow from a python file path.
+
+    The file must define either:
+      - workflow() -> List[Job]
+      - JOBS = [Job, ...]
+
+    Returns:
+      List[Job]
     """
-    mod = importlib.import_module(module_name)
+    wf_path = Path(path).expanduser().resolve()
+    if not wf_path.exists():
+        raise FileNotFoundError(f"Workflow file not found: {wf_path}")
+    if wf_path.suffix != ".py":
+        raise ValueError(f"Workflow must be a .py file, got: {wf_path.name}")
 
-    if hasattr(mod, "workflow") and callable(getattr(mod, "workflow")):
-        jobs = mod.workflow()
-    else:
-        jobs = getattr(mod, "JOBS", None)
+    module_name = f"betterci_workflow_{wf_path.stem}"
+    spec = importlib.util.spec_from_file_location(module_name, str(wf_path))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not create module spec for: {wf_path}")
 
-    if not isinstance(jobs, list):
-        raise ValueError(
-            f"{module_name} must define workflow() -> List[Job] or JOBS = [Job, ...]"
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module  # allow relative imports inside workflow file (best-effort)
+    spec.loader.exec_module(module)
+
+    jobs = None
+    if hasattr(module, "workflow") and callable(getattr(module, "workflow")):
+        jobs = module.workflow()
+    elif hasattr(module, "JOBS"):
+        jobs = getattr(module, "JOBS")
+
+    if not isinstance(jobs, list) or not all(isinstance(j, Job) for j in jobs):
+        raise TypeError(
+            "Workflow must return/define a List[Job]. "
+            "Define workflow() -> List[Job] or JOBS = [Job, ...]."
         )
+
     return jobs
+
 
 
 # ----------------------------------------------------------------------
