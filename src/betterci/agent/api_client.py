@@ -117,14 +117,16 @@ class APIClient:
         """
         Send log chunks to the API.
         
-        Note: This endpoint may not be implemented yet in the cloud API.
+        Note: This method is deprecated. Logs are now batched and sent
+        at job completion via complete_lease() in the details dict.
+        This method is kept for backwards compatibility but does nothing.
         
         Args:
             job_id: ID of the job
             logs: Log content to send
         """
-        # TODO: Implement when /leases/{job_id}/logs endpoint is available
-        # For now, logs are included in the complete_lease call
+        # Logs are batched and sent at completion via complete_lease()
+        # This method is a no-op for backwards compatibility
         pass
     
     def complete_lease(self, job_id: str, status: str, details: dict) -> None:

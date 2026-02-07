@@ -15,7 +15,13 @@ from .models import ExecutionResult, Lease
 
 
 class LogCapture:
-    """Context manager that captures stdout/stderr and streams to API."""
+    """
+    Context manager that captures stdout/stderr for later submission to API.
+    
+    Logs are captured in a buffer and sent at job completion via complete_lease().
+    This ensures all logs (including from subprocesses) are captured even if
+    exceptions occur during execution.
+    """
     
     def __init__(self, api_client: APIClient, job_id: str):
         self.api_client = api_client
@@ -34,30 +40,15 @@ class LogCapture:
         # Restore original streams
         sys.stdout = self.original_stdout
         sys.stderr = self.original_stderr
-        # Send any remaining logs
-        self.flush()
         
     def write(self, text: str) -> int:
-        """Write to buffer and stream to API."""
+        """Write to buffer."""
         self.log_buffer.write(text)
-        # Stream logs incrementally (send every chunk)
-        try:
-            self.api_client.send_logs(self.job_id, text)
-        except Exception:
-            # Don't fail execution if log streaming fails
-            pass
         return len(text)
         
     def flush(self) -> None:
-        """Flush buffer and send to API."""
-        remaining = self.log_buffer.getvalue()
-        if remaining:
-            try:
-                self.api_client.send_logs(self.job_id, remaining)
-            except Exception:
-                pass
-            self.log_buffer.seek(0)
-            self.log_buffer.truncate(0)
+        """Flush buffer (no-op, logs are sent at completion)."""
+        pass
     
     def get_logs(self) -> str:
         """Get all captured logs."""
@@ -249,7 +240,7 @@ def execute_lease(
     
     Args:
         lease: Lease object with job details
-        api_client: API client for streaming logs
+        api_client: API client for submitting results
         work_dir: Directory for repository checkouts
         cache_root: Root directory for cache storage
         
@@ -258,20 +249,21 @@ def execute_lease(
     """
     logs = ""
     job_results = {}
+    log_capture = LogCapture(api_client, lease.job_id)
     
     try:
-        # Clone/checkout repository
-        repo_path = _clone_or_update_repo(lease.repo_url, lease.ref, work_dir)
-        
-        # Convert job dict to Job model
-        job = _dict_to_job(lease.job)
-        
-        # Create cache store
-        cache = CacheStore(cache_root)
-        
-        # Execute job with log capture
-        log_capture = LogCapture(api_client, lease.job_id)
+        # Start log capture early to capture all output including setup errors
         with log_capture:
+            # Clone/checkout repository
+            repo_path = _clone_or_update_repo(lease.repo_url, lease.ref, work_dir)
+            
+            # Convert job dict to Job model
+            job = _dict_to_job(lease.job)
+            
+            # Create cache store
+            cache = CacheStore(cache_root)
+            
+            # Execute job
             try:
                 job_name, status = _run_job(job, repo_path, cache)
                 job_results = {
@@ -285,6 +277,8 @@ def execute_lease(
                     "error": str(e),
                     "error_type": type(e).__name__,
                 }
+                # Log the error to capture buffer
+                print(f"Error: {e}", file=sys.stderr)
                 raise
         
         # Get final logs from capture buffer
@@ -293,11 +287,21 @@ def execute_lease(
     except Exception as e:
         execution_status = "failed"
         error_msg = str(e)
+        
+        # Get logs from capture buffer (may be empty if error occurred before context)
+        captured_logs = log_capture.get_logs()
+        if captured_logs:
+            logs = captured_logs
+            # Append error message if not already in logs
+            if error_msg not in logs:
+                logs = f"{logs}\nError: {error_msg}"
+        else:
+            logs = error_msg
+        
         job_results = {
             "error": error_msg,
             "error_type": type(e).__name__,
         }
-        logs = error_msg
     
     return ExecutionResult(
         status=execution_status,
