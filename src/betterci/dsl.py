@@ -210,19 +210,24 @@ def matrix(key: str, values: Iterable[Any]) -> Matrix:
 # Workflow helper (single-file story)
 # ---------------------------------------------------------------------
 
-def workflow(*jobs: Job) -> List[Job]:
+def wf(*jobs: Job) -> List[Job]:
     """
-    Workflow definition helper.
+    Workflow definition helper. Use this name so you can define your own
+    def workflow(): return wf(job(...), job(...)).
 
     Users can write:
-        from betterci import workflow, job, sh
-        JOBS = workflow(
-            job(...),
-            job(...),
-        )
+        from betterci import wf, job, sh
 
-    Or:
         def workflow():
-            return workflow(job(...), job(...))  # (yes, same name; see tip below)
+            return wf(
+                job(...),
+                job(...),
+            )
+
+    Or use JOBS directly:
+        JOBS = wf(job(...), job(...))
     """
     return list(jobs)
+
+
+workflow = wf  # backward-compat alias (avoid naming your function workflow if you use it)
