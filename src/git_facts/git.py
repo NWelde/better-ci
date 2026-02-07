@@ -143,3 +143,69 @@ def merge_base(with_ref: str = "origin/main") -> str:
     """
     # `git merge-base` finds the best common ancestor between two refs
     return _git(["merge-base", "HEAD", with_ref])
+
+"""
+Step-by-step algorithm (plain English)
+
+Find the root of the Git repository
+
+Ask Git where the repository root is.
+
+Save your current directory so you can return to it later.
+
+Move into the repository root
+
+This ensures all Git commands run in the correct place.
+
+Check if the repository is dirty
+
+“Dirty” means:
+
+modified files
+
+staged files
+
+untracked files
+
+If the repo is dirty
+
+Do not record a commit SHA (because the working state isn’t fully committed).
+
+Collect changed files from three places:
+
+Files modified but not staged
+
+Files staged for commit
+
+Untracked files
+
+Combine these lists and remove duplicates.
+
+Sort the result.
+
+If the repo is clean
+
+Record the current commit SHA (HEAD).
+
+Find the point where this branch diverged from another branch (usually origin/main).
+
+Ask Git which files changed between that base point and HEAD.
+
+If that fails (for example no remote or first commit):
+
+Fall back to comparing with the previous commit.
+
+If even that fails:
+
+Treat all tracked files as changed.
+
+Return two things
+
+The commit SHA (or None if dirty)
+
+The list of changed files
+
+Always return to the original directory
+
+Even if something crashes.
+"""

@@ -5,7 +5,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Dict, Iterable, List, Set, Tuple
 
-from test_model import Job  # using test_model, not model
+from model import Job  # using test_model, not model
 
 
 def build_dag(jobs: List[Job]) -> Tuple[Dict[str, Set[str]], Dict[str, int]]:
@@ -26,16 +26,16 @@ def build_dag(jobs: List[Job]) -> Tuple[Dict[str, Set[str]], Dict[str, int]]:
     indeg: Dict[str, int] = {n: 0 for n in name_set}
 
     for job in jobs:
-        deps = getattr(job, "needs", None) or []
-        for dep in deps:
-            if dep not in name_set:
+        needs = getattr(job, "needs", None) or []
+        for needs in needs:
+            if needs not in name_set:
                 raise ValueError(
-                    f"Job '{job.name}' depends on missing job '{dep}'. "
+                    f"Job '{job.name}' needs on missing job '{needs}'. "
                     f"Known jobs: {sorted(name_set)}"
                 )
-            # Edge dep -> job.name (dep must run before job)
-            if job.name not in adj[dep]:
-                adj[dep].add(job.name)
+            # Edge needs -> job.name (needs must run before job)
+            if job.name not in adj[needs]:
+                adj[needs].add(job.name)
                 indeg[job.name] += 1
 
     return adj, indeg
@@ -70,7 +70,7 @@ def topo_levels(adj: Dict[str, Set[str]], indeg: Dict[str, int]) -> List[List[st
 
     if processed != len(indeg):
         remaining = sorted([n for n, d in indeg.items() if d > 0])
-        raise ValueError(f"DAG has a cycle (or unresolved deps). Stuck nodes: {remaining}")
+        raise ValueError(f"DAG has a cycle (or unresolved needss). Stuck nodes: {remaining}")
 
     return levels
 
@@ -83,7 +83,7 @@ def run_dag_pipeline(
     """
     Scheduler + orchestrator (Option A):
 
-    - Computes a valid execution order from dependencies (DAG).
+    - Computes a valid execution order from needsendencies (DAG).
     - Runs each stage in parallel.
     - Calls run_fn(job) for actual execution.
     - On first failure, stops and raises the exception.
