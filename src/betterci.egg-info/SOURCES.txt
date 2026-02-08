@@ -13,6 +13,11 @@ src/betterci.egg-info/dependency_links.txt
 src/betterci.egg-info/entry_points.txt
 src/betterci.egg-info/requires.txt
 src/betterci.egg-info/top_level.txt
+src/betterci/agent/__init__.py
+src/betterci/agent/agent.py
+src/betterci/agent/api_client.py
+src/betterci/agent/executor.py
+src/betterci/agent/models.py
 src/betterci/git_facts/__init__.py
 src/betterci/git_facts/git.py
 src/betterci/step_workflows/__init__.py
@@ -20,3 +25,5 @@ src/betterci/step_workflows/artifacts.py
 src/betterci/step_workflows/docker.py
 src/betterci/step_workflows/lint.py
 src/betterci/step_workflows/test.py
+src/betterci/ui/__init__.py
+src/betterci/ui/console.py
