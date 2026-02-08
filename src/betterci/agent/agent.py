@@ -9,6 +9,7 @@ from pathlib import Path
 from .api_client import APIClient, APIError
 from .executor import execute_lease
 from .models import Lease
+from betterci.ui.console import get_console
 
 
 class Agent:
@@ -35,44 +36,57 @@ class Agent:
     
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals."""
-        print(f"\nReceived signal {signum}, shutting down gracefully...")
+        console = get_console()
+        console.print_info(f"\nReceived signal {signum}, shutting down gracefully...")
         self.running = False
     
     def run(self) -> None:
         """Run the agent loop."""
-        print(f"BetterCI agent starting...")
-        print(f"  API: {self.api_client.base_url}")
-        print(f"  Poll interval: {self.poll_interval}s")
-        print(f"  Work directory: {self.work_dir}")
-        print()
+        console = get_console()
+        console.print_agent_started(
+            agent_id=self.api_client.agent_id,
+            api=self.api_client.base_url,
+            poll_interval=self.poll_interval,
+        )
         
         while self.running:
             try:
                 lease = self.api_client.claim_lease()
                 
                 if lease:
-                    print(f"[{lease.job_id}] Acquired lease for job: {lease.job_name}")
+                    console.print_lease_acquired(
+                        job_name=lease.job_name,
+                        run_id=lease.job_id,
+                    )
                     self._execute_lease(lease)
                 else:
                     # No jobs available, wait before next poll
                     time.sleep(self.poll_interval)
                     
             except KeyboardInterrupt:
-                print("\nInterrupted by user")
+                console.print_info("\nInterrupted by user")
                 break
             except APIError as e:
-                print(f"API error: {e}")
+                console.print_error(
+                    "API error",
+                    str(e),
+                    suggestion="Check API connectivity and retry.",
+                )
                 # Wait before retrying on API errors
                 time.sleep(self.poll_interval)
             except Exception as e:
-                print(f"Unexpected error: {e}")
+                console.print_exception(e)
                 # Wait before retrying
                 time.sleep(self.poll_interval)
         
-        print("Agent stopped.")
+        console.print_info("Agent stopped.")
     
     def _execute_lease(self, lease: Lease) -> None:
         """Execute a single lease."""
+        import time
+        console = get_console()
+        start_time = time.time()
+        
         try:
             result = execute_lease(
                 lease,
@@ -92,12 +106,18 @@ class Agent:
                 },
             )
             
-            print(f"[{lease.job_id}] Completed with status: {result.status}")
-            if result.logs:
-                print(f"[{lease.job_id}] Logs:")
-                print("=" * 60)
-                print(result.logs)
-                print("=" * 60)
+            duration = time.time() - start_time
+            console.print_execution_complete(
+                status=result.status,
+                duration=duration,
+            )
+            
+            # Show logs in debug mode
+            if console.debug and result.logs:
+                console.print_info(f"\nLogs for {lease.job_name}:")
+                console.print_info("=" * 60)
+                console.print_info(result.logs)
+                console.print_info("=" * 60)
             
         except Exception as e:
             # Send failure status
@@ -111,9 +131,17 @@ class Agent:
                     },
                 )
             except Exception as api_err:
-                print(f"[{lease.job_id}] Failed to send completion: {api_err}")
+                console.print_error(
+                    "Failed to send completion",
+                    f"Could not send completion status to API: {api_err}",
+                )
             
-            print(f"[{lease.job_id}] Execution failed: {e}")
+            duration = time.time() - start_time
+            console.print_execution_complete(
+                status="failed",
+                duration=duration,
+            )
+            console.print_exception(e)
 
 
 def run_agent(api_url: str, agent_id: str, poll_interval: int = 5) -> None:

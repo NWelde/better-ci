@@ -14,6 +14,7 @@ from .cache import CacheStore, CacheHit
 from fnmatch import fnmatch
 
 from .git_facts.git import repo_root, head_sha, is_dirty, merge_base, changed_files as changed_files_between
+from .ui.console import get_console
 
 # local dev ---> commit ---> CI ---> push ---> cloud CI
 
@@ -213,6 +214,8 @@ def _get_workflow_runner(workflow_type: str):
 
 
 def _run_step(job: Job, step: Step, repo_root: Path) -> None:
+    console = get_console()
+    
     # Check if this step has a workflow_type attribute
     workflow_type = getattr(step, "workflow_type", None)
     if workflow_type:
@@ -222,25 +225,29 @@ def _run_step(job: Job, step: Step, repo_root: Path) -> None:
             return
         else:
             raise ValueError(
-                f"[{job.name}] step '{step.name}' has workflow_type '{workflow_type}' "
+                f"Step '{step.name}' has workflow_type '{workflow_type}' "
                 f"but no run_step function found in step_workflows.{workflow_type}"
             )
 
     # Regular step execution (default)
     cwd = (repo_root / (step.cwd or ".")).resolve()
     if not cwd.exists():
-        raise FileNotFoundError(f"[{job.name}] step '{step.name}' cwd not found: {cwd}")
+        raise FileNotFoundError(
+            f"Step '{step.name}' working directory not found: {cwd}"
+        )
 
     env = os.environ.copy()
     env.update(getattr(job, "env", {}) or {})
 
+    # Always capture output for logging/API submission
+    # In debug mode, we'll also show it in real-time if needed
     proc = subprocess.run(
         step.run,
         shell=True,
         cwd=str(cwd),
         env=env,
         text=True,
-        capture_output=True,   # capture for error messages
+        capture_output=True,
     )
 
     # Print output so it can be streamed (e.g., by agent log capture)
@@ -250,6 +257,17 @@ def _run_step(job: Job, step: Step, repo_root: Path) -> None:
         print(proc.stderr, end="", file=sys.stderr)
 
     if proc.returncode != 0:
+        # Generate helpful hint based on command
+        hint = None
+        cmd_lower = step.run.lower()
+        for tool, tool_hint in TOOL_HINTS.items():
+            if tool in cmd_lower:
+                hint = tool_hint
+                break
+        
+        if not hint:
+            hint = f"Run '{step.run}' locally to reproduce"
+        
         raise StepFailure(
             job=job.name,
             step=step.name,
@@ -265,28 +283,57 @@ def _run_job(job: Job, repo_root: Path, cache: CacheStore) -> Tuple[str, str]:
       - "ok"
     Raises on failures.
     """
+    console = get_console()
     cache_dirs = list(getattr(job, "cache_dirs", []) or [])
     skip_on_hit = bool(getattr(job, "cache_skip_on_hit", False))
     cache_enabled = bool(getattr(job, "cache_enabled", True))
 
+    # Print job start
+    console.print_job_start(job.name)
+
     # ---- restore ----
     if cache_enabled and cache_dirs:
         hit: CacheHit = cache.restore(job, repo_root=repo_root)
-        print(f"[{job.name}] cache: {hit.reason}")
-        if hit.hit and skip_on_hit:
-            return job.name, "skipped(cache)"
+        if hit.hit:
+            console.print_cache_hit(job.name, hit.reason)
+            if skip_on_hit:
+                console.print_job_skipped(job.name, "cache hit")
+                return job.name, "skipped(cache)"
+        else:
+            console.print_cache_miss(job.name)
 
     # ---- run steps ----
     for step in job.steps:
-        print(f"[{job.name}] ▶ {step.name}")
-        _run_step(job, step, repo_root)
+        console.print_step(step.name)
+        try:
+            _run_step(job, step, repo_root)
+            console.print_success(step.name)
+        except StepFailure as e:
+            # Generate helpful hint
+            hint = None
+            cmd_lower = e.cmd.lower()
+            for tool, tool_hint in TOOL_HINTS.items():
+                if tool in cmd_lower:
+                    hint = tool_hint
+                    break
+            
+            if not hint:
+                hint = f"Run '{e.cmd}' locally to reproduce"
+            
+            console.print_failure(
+                e.step,
+                str(e),
+                exit_code=e.exit_code,
+                hint=hint,
+            )
+            raise
 
     # ---- save ----
     if cache_enabled and cache_dirs:
         key, _manifest = cache.save(job, repo_root=repo_root)
         keep = int(getattr(job, "cache_keep", 3))
         cache.prune(job.name, keep=keep)
-        print(f"[{job.name}] cache: saved ({key[:12]}...)")
+        console.print_cache_saved(job.name, key)
 
     return job.name, "ok"
 
@@ -341,10 +388,12 @@ def select_jobs(
     compare_ref: str,
     print_plan: bool,
 ) -> List[Job]:
+    console = get_console()
+    
     if not use_git_diff:
         if print_plan:
             for j in jobs:
-                print(f"✓ {j.name} (git diff disabled)")
+                console.print_plan_job(j.name, "git diff disabled")
         return list(jobs)
 
     _head, changed = git_functionality(compare_ref=compare_ref)
@@ -356,7 +405,7 @@ def select_jobs(
         if getattr(j, "diff_enabled", True) is False:
             selected.append(j)
             if print_plan:
-                print(f"✓ {j.name} (diff disabled for job)")
+                console.print_plan_job(j.name, "diff disabled for job")
             continue
 
         patterns = getattr(j, "paths", None)
@@ -365,17 +414,17 @@ def select_jobs(
         if not patterns:
             selected.append(j)
             if print_plan:
-                print(f"✓ {j.name} (no paths specified)")
+                console.print_plan_job(j.name, "no paths specified")
             continue
 
         hit = any(_matches_any(f, patterns) for f in changed_set)
         if hit:
             selected.append(j)
             if print_plan:
-                print(f"✓ {j.name} (matched {patterns})")
+                console.print_plan_job(j.name, f"matched {patterns}")
         else:
             if print_plan:
-                print(f"⏭ {j.name} (no match for {patterns})")
+                console.print_plan_job_skipped(j.name, f"no match for {patterns}")
 
     return selected
 
@@ -430,9 +479,22 @@ def run_dag(
             try:
                 job_name, status = fut.result()
                 results[job_name] = status
-            except Exception as e:
+            except StepFailure:
+                # StepFailure is already handled and printed in _run_job
                 results[name] = "failed"
-                print(str(e))
+                failed = True
+            except Exception as e:
+                # Other exceptions (unexpected errors)
+                results[name] = "failed"
+                console = get_console()
+                console.print_failure(
+                    name,
+                    str(e),
+                    hint="Check the error message above for details.",
+                    is_job=True,
+                )
+                if console.debug:
+                    console.print_exception(e)
                 failed = True
 
             # unlock dependents only if success or skipped(cache)
