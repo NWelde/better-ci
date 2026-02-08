@@ -1,86 +1,42 @@
 # betterci_workflow.py
-# Workflow for tracking betterci itself: testing, linting, caching, and git diff
+# Simple workflow to demonstrate git-diff and caching
+#
+# DEMO:
+# 1. CACHE: Run twice - second run uses cache (cache_skip_on_hit=True)
+# 2. GIT-DIFF: Run with --git-diff, modify src/ or README.md to see job selection
+#
 from __future__ import annotations
 from betterci.dsl import wf, job, sh
-from betterci.step_workflows.lint import lint_step
 
 def workflow():
     return wf(
-        # Lint job - runs ruff on the codebase
+        # Cache demo - creates artifact, cached on second run
         job(
-            "lint",
-            lint_step(
-                "Ruff check",
-                tool="ruff",
-                args="check .",
-                files=["src/", "pyproject.toml"],
-            ),
-            paths=["src/**", "pyproject.toml", "*.py"],
-            inputs=["src/**", "pyproject.toml", "*.py"],
-            cache_dirs=[".venv", "~/.cache/pip"],
+            "cache-demo",
+            sh("Create artifact", "mkdir -p .betterci/demo && echo 'Created at:' $(date) > .betterci/demo/artifact.txt"),
+            sh("Show artifact", "cat .betterci/demo/artifact.txt"),
+            paths=[".betterci/demo/**"],
+            inputs=[".betterci/demo/**"],
+            cache_dirs=[".betterci/demo"],
             cache_enabled=True,
+            cache_skip_on_hit=True,
             cache_keep=5,
         ),
 
-        # Test job - runs pytest on the codebase
+        # Git-diff demo - only runs when src/ files change
         job(
-            "test",
-            sh("Install package", "pip install -e ."),
-            sh("Run pytest", "pytest -q"),
-            needs=["lint"],
-            paths=["src/**", "tests/**", "pyproject.toml"],
-            inputs=["src/**", "tests/**", "pyproject.toml"],
-            cache_dirs=[".venv", "~/.cache/pip", ".pytest_cache"],
-            cache_enabled=True,
-            cache_keep=5,
+            "check-src",
+            sh("Check src files", "echo 'Running because src/ files changed'"),
+            paths=["src/**"],
+            inputs=["src/**"],
         ),
 
-        # Format check job - ensures code is properly formatted
+        # Git-diff demo - only runs when README changes
         job(
-            "format-check",
-            lint_step(
-                "Ruff format check",
-                tool="ruff",
-                args="format --check .",
-                files=["src/", "*.py"],
-            ),
-            paths=["src/**", "*.py"],
-            inputs=["src/**", "*.py"],
-            cache_dirs=[".venv", "~/.cache/pip"],
-            cache_enabled=True,
-            cache_keep=5,
-        ),
-
-        # Type check job (if mypy is available)
-        job(
-            "type-check",
-            sh(
-                "Type check",
-                "python -m mypy src/betterci --ignore-missing-imports || echo 'mypy not available, skipping'",
-            ),
-            paths=["src/**", "pyproject.toml"],
-            inputs=["src/**", "pyproject.toml"],
-            cache_dirs=[".venv", "~/.cache/pip"],
-            cache_enabled=True,
-            cache_keep=5,
-        ),
-
-        # Documentation check - ensures README and docs are up to date
-        job(
-            "docs-check",
-            sh("Check README", "test -f README.md && echo 'README.md exists'"),
-            paths=["README.md", "docs/**"],
-            inputs=["README.md", "docs/**"],
-            diff_enabled=True,
-        ),
-
-        # Config check - validates project configuration
-        job(
-            "config-check",
-            sh("Validate pyproject.toml", "python -c 'import tomli; tomli.load(open(\"pyproject.toml\", \"rb\"))' || python -c 'import tomllib; tomllib.load(open(\"pyproject.toml\", \"rb\"))'"),
-            paths=["pyproject.toml"],
-            inputs=["pyproject.toml"],
-            diff_enabled=True,
+            "check-docs",
+            sh("Check docs", "echo 'Running because README.md changed'"),
+            paths=["README.md"],
+            inputs=["README.md"],
         ),
     )
 
