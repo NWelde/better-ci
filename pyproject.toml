@@ -21,3 +21,10 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["betterci*"]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0", "pytest-timeout"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+timeout = 30
