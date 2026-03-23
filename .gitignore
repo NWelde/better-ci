@@ -1,2 +1,8 @@
 .venv/
-.gitignore
+__pycache__/
+*.py[cod]
+*.egg-info/
+.betterci/
+.env
+dist/
+build/
