@@ -46,8 +46,8 @@ def compile_test(step: Step) -> list[Step]:
     if framework == "pytest":
         out: list[Step] = []
         if install:
-            out.append(sh("Install dependencies", "pip install -e .[test] 2>/dev/null || pip install -r requirements.txt", cwd=cwd))
-        out.append(sh(step.name, f"pytest {args}".strip(), cwd=cwd))
+            out.append(sh("Install dependencies", "python3 -m pip install -e .[test] 2>/dev/null || python3 -m pip install -r requirements.txt", cwd=cwd))
+        out.append(sh(step.name, f"python3 -m pytest {args}".strip(), cwd=cwd))
         return out
 
     if framework == "npm":
