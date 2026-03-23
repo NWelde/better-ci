@@ -5,6 +5,7 @@ import io
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any, Dict
 
 from betterci.cache import CacheStore
 from betterci.model import Job, Step
@@ -14,220 +15,174 @@ from .api_client import APIClient
 from .models import ExecutionResult, Lease
 
 
+# ---------------------------------------------------------------------------
+# Log capture
+# ---------------------------------------------------------------------------
+
 class LogCapture:
     """
-    Context manager that captures stdout/stderr for later submission to API.
-    
-    Logs are captured in a buffer and sent at job completion via complete_lease().
-    This ensures all logs (including from subprocesses) are captured even if
-    exceptions occur during execution.
+    Context manager that captures stdout/stderr into a buffer for later
+    submission to the cloud API via complete_lease().
     """
-    
-    def __init__(self, api_client: APIClient, job_id: str):
-        self.api_client = api_client
-        self.job_id = job_id
+
+    def __init__(self):
         self.log_buffer = io.StringIO()
-        self.original_stdout = sys.stdout
-        self.original_stderr = sys.stderr
-        
-    def __enter__(self):
-        # Redirect stdout and stderr to our buffer
-        sys.stdout = self
-        sys.stderr = self
+        self._orig_stdout = sys.stdout
+        self._orig_stderr = sys.stderr
+
+    def __enter__(self) -> "LogCapture":
+        sys.stdout = self  # type: ignore[assignment]
+        sys.stderr = self  # type: ignore[assignment]
         return self
-        
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        # Restore original streams
-        sys.stdout = self.original_stdout
-        sys.stderr = self.original_stderr
-        
+
+    def __exit__(self, *_) -> None:
+        sys.stdout = self._orig_stdout
+        sys.stderr = self._orig_stderr
+
     def write(self, text: str) -> int:
-        """Write to buffer."""
         self.log_buffer.write(text)
+        # Also forward to original stderr so the agent itself stays visible
+        self._orig_stderr.write(text)
         return len(text)
-        
+
     def flush(self) -> None:
-        """Flush buffer (no-op, logs are sent at completion)."""
-        pass
-    
+        self._orig_stderr.flush()
+
     def get_logs(self) -> str:
-        """Get all captured logs."""
         return self.log_buffer.getvalue()
 
 
+# ---------------------------------------------------------------------------
+# Repository checkout
+# ---------------------------------------------------------------------------
+
 def _clone_or_update_repo(repo_url: str, ref: str, work_dir: Path) -> Path:
     """
-    Clone or update a repository at the specified ref.
-    
-    Args:
-        repo_url: Git repository URL
-        ref: Git reference (branch, tag, or commit SHA)
-        work_dir: Base directory for checkouts
-        
-    Returns:
-        Path to the checked out repository
-        
-    Raises:
-        RuntimeError: If git operations fail
+    Clone or update a repository at the given ref.
+    Returns the path to the checked-out repository.
+
+    Security: repo_url is passed directly to git. Callers should ensure it
+    comes from a trusted source (the cloud API, which only accepts authenticated
+    submissions when API_KEY is configured).
     """
-    # Create work directory if it doesn't exist
     work_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Use a sanitized version of repo_url as directory name
-    # Simple approach: use last part of URL
+
+    # Use the last URL segment as the local directory name
     repo_name = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
+    # Basic sanitization: strip path separators to prevent directory traversal
+    repo_name = repo_name.replace("/", "_").replace("\\", "_") or "repo"
     repo_path = work_dir / repo_name
-    
+
     try:
         if repo_path.exists():
-            # Update existing repo
             result = subprocess.run(
                 ["git", "fetch", "origin"],
                 cwd=repo_path,
-                check=False,
                 capture_output=True,
                 text=True,
             )
             if result.returncode != 0:
-                raise RuntimeError(f"git fetch failed: {result.stderr}")
-            
-            result = subprocess.run(
-                ["git", "checkout", ref],
-                cwd=repo_path,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0:
-                raise RuntimeError(f"git checkout {ref} failed: {result.stderr}")
+                raise RuntimeError(f"git fetch failed: {result.stderr.strip()}")
         else:
-            # Clone new repo
             result = subprocess.run(
                 ["git", "clone", repo_url, str(repo_path)],
-                check=False,
                 capture_output=True,
                 text=True,
             )
             if result.returncode != 0:
-                raise RuntimeError(f"git clone failed: {result.stderr}")
-            
-            result = subprocess.run(
-                ["git", "checkout", ref],
-                cwd=repo_path,
-                check=False,
-                capture_output=True,
-                text=True,
+                raise RuntimeError(f"git clone failed: {result.stderr.strip()}")
+
+        result = subprocess.run(
+            ["git", "checkout", ref],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"git checkout {ref!r} failed: {result.stderr.strip()}"
             )
-            if result.returncode != 0:
-                raise RuntimeError(f"git checkout {ref} failed: {result.stderr}")
+
+    except FileNotFoundError:
+        raise RuntimeError("git not found. Install Git on the agent machine.")
     except subprocess.SubprocessError as e:
         raise RuntimeError(f"Git operation failed: {e}")
-    except FileNotFoundError:
-        raise RuntimeError("git command not found. Please install Git.")
-    
+
     return repo_path
 
 
-def job_to_dict(job: Job) -> dict:
-    """
-    Convert a Job model to a dictionary for API submission.
-    This is the reverse of _dict_to_job().
-    
-    Args:
-        job: Job model instance
-        
-    Returns:
-        Dictionary with job definition
-    """
-    # Convert steps to list of dicts
+# ---------------------------------------------------------------------------
+# Job serialization (Job <-> dict)
+# ---------------------------------------------------------------------------
+
+def job_to_dict(job: Job) -> Dict[str, Any]:
+    """Serialize a Job model to a plain dict for API submission."""
     steps = []
     for step in job.steps:
-        step_dict = {
-            "name": step.name,
-            "run": step.run,
-        }
+        d: Dict[str, Any] = {"name": step.name, "run": step.run}
         if step.cwd is not None:
-            step_dict["cwd"] = step.cwd
+            d["cwd"] = step.cwd
         if step.kind is not None:
-            step_dict["kind"] = step.kind
+            d["kind"] = step.kind
         if step.data is not None:
-            step_dict["data"] = step.data
-        steps.append(step_dict)
-    
-    # Build job dict with required fields
-    job_dict = {
-        "name": job.name,
-        "steps": steps,
-        "needs": job.needs,
-        "inputs": job.inputs,
-        "env": job.env,
-        "requires": job.requires,
-        "diff_enabled": job.diff_enabled,
+            d["data"] = step.data
+        if step.workflow_type is not None:
+            d["workflow_type"] = step.workflow_type
+        if step.meta:
+            d["meta"] = step.meta
+        steps.append(d)
+
+    return {
+        "name":              job.name,
+        "steps":             steps,
+        "needs":             job.needs,
+        "inputs":            job.inputs,
+        "env":               job.env,
+        "requires":          job.requires,
+        "secrets":           job.secrets,
+        "paths":             job.paths,
+        "diff_enabled":      job.diff_enabled,
+        "cache_dirs":        job.cache_dirs,
+        "cache_enabled":     job.cache_enabled,
+        "cache_skip_on_hit": job.cache_skip_on_hit,
+        "cache_keep":        job.cache_keep,
     }
-    
-    # Add optional fields if present
-    if job.paths is not None:
-        job_dict["paths"] = job.paths
-    
-    # Add cache fields if present (using getattr for optional fields)
-    if hasattr(job, "cache_dirs"):
-        job_dict["cache_dirs"] = getattr(job, "cache_dirs")
-    if hasattr(job, "cache_enabled"):
-        job_dict["cache_enabled"] = getattr(job, "cache_enabled")
-    if hasattr(job, "cache_skip_on_hit"):
-        job_dict["cache_skip_on_hit"] = getattr(job, "cache_skip_on_hit")
-    if hasattr(job, "cache_keep"):
-        job_dict["cache_keep"] = getattr(job, "cache_keep")
-    
-    return job_dict
 
 
-def _dict_to_job(job_dict: dict) -> Job:
-    """
-    Convert a job dictionary from API to a Job model.
-    
-    Args:
-        job_dict: Dictionary with job definition
-        
-    Returns:
-        Job model instance
-    """
-    # Convert steps
+def _dict_to_job(d: Dict[str, Any]) -> Job:
+    """Deserialize a plain dict back to a Job model."""
     steps = []
-    for step_dict in job_dict.get("steps", []):
-        step = Step(
-            name=step_dict["name"],
-            run=step_dict.get("run", ""),
-            cwd=step_dict.get("cwd"),
-            kind=step_dict.get("kind"),
-            data=step_dict.get("data"),
-        )
-        steps.append(step)
-    
-    # Create Job
-    job = Job(
-        name=job_dict["name"],
-        steps=steps,
-        needs=job_dict.get("needs", []),
-        inputs=job_dict.get("inputs", []),
-        env=job_dict.get("env", {}),
-        requires=job_dict.get("requires", []),
-        paths=job_dict.get("paths"),
-        diff_enabled=job_dict.get("diff_enabled", True),
-    )
-    
-    # Set cache fields if present (using setattr for optional fields)
-    if "cache_dirs" in job_dict:
-        setattr(job, "cache_dirs", job_dict["cache_dirs"])
-    if "cache_enabled" in job_dict:
-        setattr(job, "cache_enabled", job_dict["cache_enabled"])
-    if "cache_skip_on_hit" in job_dict:
-        setattr(job, "cache_skip_on_hit", job_dict["cache_skip_on_hit"])
-    if "cache_keep" in job_dict:
-        setattr(job, "cache_keep", job_dict["cache_keep"])
-    
-    return job
+    for sd in d.get("steps", []):
+        steps.append(Step(
+            name=sd["name"],
+            run=sd.get("run", ""),
+            cwd=sd.get("cwd"),
+            kind=sd.get("kind"),
+            data=sd.get("data"),
+            workflow_type=sd.get("workflow_type"),
+            meta=sd.get("meta") or {},
+        ))
 
+    return Job(
+        name=d["name"],
+        steps=steps,
+        needs=d.get("needs", []),
+        inputs=d.get("inputs", []),
+        env=d.get("env", {}),
+        requires=d.get("requires", []),
+        secrets=d.get("secrets", []),
+        paths=d.get("paths"),
+        diff_enabled=d.get("diff_enabled", True),
+        cache_dirs=d.get("cache_dirs", []),
+        cache_enabled=d.get("cache_enabled", True),
+        cache_skip_on_hit=d.get("cache_skip_on_hit", False),
+        cache_keep=d.get("cache_keep", 3),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Lease execution
+# ---------------------------------------------------------------------------
 
 def execute_lease(
     lease: Lease,
@@ -236,76 +191,51 @@ def execute_lease(
     cache_root: Path = Path(".betterci/cache"),
 ) -> ExecutionResult:
     """
-    Execute a job lease.
-    
-    Args:
-        lease: Lease object with job details
-        api_client: API client for submitting results
-        work_dir: Directory for repository checkouts
-        cache_root: Root directory for cache storage
-        
-    Returns:
-        ExecutionResult with status and logs
+    Execute a job lease end-to-end:
+      1. Clone/update the repository.
+      2. Deserialize the job from the lease payload.
+      3. Run the job using the standard runner (with pre-flight checks, caching, etc.).
+      4. Return the result.
+
+    All stdout/stderr is captured for submission to the cloud API.
     """
-    logs = ""
-    job_results = {}
-    log_capture = LogCapture(api_client, lease.job_id)
-    
+    log_capture = LogCapture()
+
     try:
-        # Start log capture early to capture all output including setup errors
         with log_capture:
-            # Clone/checkout repository
-            repo_path = _clone_or_update_repo(lease.repo_url, lease.ref, work_dir)
-            
-            # Convert job dict to Job model
+            repo_path = _clone_or_update_repo(
+                lease.repo_url, lease.ref, work_dir
+            )
             job = _dict_to_job(lease.job)
-            
-            # Create cache store
             cache = CacheStore(cache_root)
-            
-            # Execute job
+
             try:
                 job_name, status = _run_job(job, repo_path, cache)
-                job_results = {
+                job_results: Dict[str, Any] = {
                     "job_name": job_name,
                     "status": status,
                 }
-                execution_status = "success" if status != "failed" else "failed"
+                execution_status = "ok" if status != "failed" else "failed"
             except Exception as e:
-                execution_status = "failed"
-                job_results = {
-                    "error": str(e),
-                    "error_type": type(e).__name__,
-                }
-                # Log the error to capture buffer
-                print(f"Error: {e}", file=sys.stderr)
+                print(f"Job execution error: {e}", file=sys.stderr)
                 raise
-        
-        # Get final logs from capture buffer
+
         logs = log_capture.get_logs()
-        
+        return ExecutionResult(
+            status=execution_status,
+            logs=logs,
+            job_results=job_results,
+        )
+
     except Exception as e:
-        execution_status = "failed"
+        logs = log_capture.get_logs()
         error_msg = str(e)
-        
-        # Get logs from capture buffer (may be empty if error occurred before context)
-        captured_logs = log_capture.get_logs()
-        if captured_logs:
-            logs = captured_logs
-            # Append error message if not already in logs
-            if error_msg not in logs:
-                logs = f"{logs}\nError: {error_msg}"
-        else:
-            logs = error_msg
-        
-        job_results = {
-            "error": error_msg,
-            "error_type": type(e).__name__,
-        }
-    
-    return ExecutionResult(
-        status=execution_status,
-        logs=logs,
-        job_results=job_results,
-        error=job_results.get("error"),
-    )
+        if error_msg and error_msg not in logs:
+            logs = f"{logs}\nError: {error_msg}".strip()
+
+        return ExecutionResult(
+            status="failed",
+            logs=logs,
+            job_results={"error": error_msg, "error_type": type(e).__name__},
+            error=error_msg,
+        )
